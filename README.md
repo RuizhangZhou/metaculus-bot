@@ -24,6 +24,7 @@ The easiest way to use this repo is to fork it, enable github workflow/actions, 
 2) **Set secrets**: Go to `Settings -> Secrets and variables -> Actions -> New repository secret` and set API keys/Tokens as secrets. You will want to set your METACULUS_TOKEN and an OPENROUTER_API_KEY (or whatever LLM/search providers you plan to use). This will be used to post questions to Metaculus. Make sure to copy the name of these variables exactly (including all caps).
    - You can create a METACULUS_TOKEN at https://metaculus.com/aib. If you get confused, please see the instructions on our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#creating-your-bot-account-and-metaculus-token) page.
    - If you want auto-submission, make sure `METACULUS_TOKEN` belongs to the account that should submit (e.g. your bot account).
+   - If you stored secrets under `Settings -> Environments`, you must add `environment: <your-environment-name>` to the workflow job, otherwise `${{ secrets.METACULUS_TOKEN }}` will be empty.
    - You can get an OPENROUTER_API_KEY with free credits by filling out this [form](https://forms.gle/aQdYMq9Pisrf1v7d8). If you don't want to wait or want to use more models than we provide, you can also make your own API key on OpenRouter's [website](https://openrouter.ai/). First, make an account, then go to your profile, then go to "keys", and then make a key. Please read our [documentation](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#can-i-get-free-search-and-llm-services) about our free credits
    - Other LLM and Search providers should work out of the box (such as OPENAI_API_KEY, PERPLEXITY_API_KEY, ASKNEWS_SECRET, etc), though we recommend OpenRouter to start.
    - Optional notifications: set `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN`, `MATRIX_ROOM_ID` to receive Matrix messages.
@@ -48,7 +49,7 @@ If you want the bot to *analyze questions for you* without auto-submitting forec
 - Run locally: `poetry run python main.py --mode digest`
 - You can also override tournaments ad-hoc with repeated `--tournament ...` flags.
 - Outputs:
-  - `reports/digest/changes.md` (only “significant changes” vs the last run)
+  - `reports/digest/changes.md` (only significant changes vs the last run)
   - `reports/digest/digest_YYYY-MM-DD.md` (same content, dated)
   - `.state/digest_state.json` (cached state used for comparisons)
 - GitHub Actions: enable `.github/workflows/daily_digest.yaml` and set the same API key secrets as the normal bot. Optionally set Matrix secrets (`MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN`, `MATRIX_ROOM_ID`) to get a notification when significant changes are detected.
@@ -87,13 +88,20 @@ to install all required dependencies.
 
 Running the bot requires various environment variables. If you run the bot locally, the easiest way to set them is to create a file called `.env` in the root directory of the repository (copy the `.env.template`).
 
+Note: `METACULUS_TOKEN` should be the raw token value (no `Token ` / `Bearer ` prefix).
+
 ### Running the bot
 
 To test the simple bot, execute the following command in your terminal:
 ```bash
-poetry run python main.py --mode test_questions
+poetry run python main.py --mode test_questions --no-submit
 ```
-Make sure to set the environment variables as described above and to set the parameters in the code to your liking. In particular, to submit predictions, make sure that `submit_predictions` is set to `True` (it is set to `True` by default in main.py).
+Make sure to set the environment variables as described above. To submit forecasts, use `--submit` (tournament/metaculus_cup default to submitting; digest never submits).
+
+To forecast a tournament without submitting:
+```bash
+poetry run python main.py --mode tournament --tournament climate --no-submit
+```
 
 ## Example usage of /news and /deepnews:
 If you are using AskNews, here is some useful example code.
