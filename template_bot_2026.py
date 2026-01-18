@@ -162,17 +162,47 @@ class SpringTemplateBot2026(ForecastBot):
                 or researcher == "asknews/deep-research/medium-depth"
                 or researcher == "asknews/deep-research/high-depth"
             ):
-                research = await AskNewsSearcher().call_preconfigured_version(
-                    researcher, prompt
-                )
+                try:
+                    research = await AskNewsSearcher().call_preconfigured_version(
+                        researcher, prompt
+                    )
+                except Exception as e:
+                    error_text = str(e)
+                    if "reserved for Spelunker and Analyst tiers" in error_text:
+                        logger.warning(
+                            "AskNews API access is not enabled for this plan (403). "
+                            "Disable AskNews research or upgrade your AskNews plan. "
+                            f"Error: {error_text}"
+                        )
+                    else:
+                        logger.warning(f"AskNews research failed, continuing without it: {error_text}")
+                    research = ""
             elif researcher.startswith("smart-searcher"):
                 model_name = researcher.removeprefix("smart-searcher/")
+                try:
+                    num_searches_to_run = int(
+                        os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2")
+                    )
+                except Exception:
+                    num_searches_to_run = 2
+                try:
+                    num_sites_per_search = int(
+                        os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
+                    )
+                except Exception:
+                    num_sites_per_search = 10
+                use_advanced_filters = (
+                    os.getenv("SMART_SEARCHER_USE_ADVANCED_FILTERS", "")
+                    .strip()
+                    .lower()
+                    in {"1", "true", "yes", "y"}
+                )
                 searcher = SmartSearcher(
                     model=model_name,
                     temperature=0,
-                    num_searches_to_run=2,
-                    num_sites_per_search=10,
-                    use_advanced_filters=False,
+                    num_searches_to_run=max(1, num_searches_to_run),
+                    num_sites_per_search=max(1, num_sites_per_search),
+                    use_advanced_filters=use_advanced_filters,
                 )
                 research = await searcher.invoke(prompt)
             elif not researcher or researcher == "None" or researcher == "no_research":

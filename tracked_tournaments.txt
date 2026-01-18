@@ -1,5 +1,8 @@
 # One tournament URL or slug per line.
 # Lines starting with # are ignored.
+#
+# Note: This file is used by `--mode digest` (human-facing monitoring). The bot
+# submission workflow is configured separately to only submit to Spring AIB.
 https://www.metaculus.com/tournament/market-pulse-26q1/
 https://www.metaculus.com/tournament/climate/
 https://www.metaculus.com/tournament/sagan-tournament/

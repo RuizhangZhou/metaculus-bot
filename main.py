@@ -10,7 +10,7 @@ import dotenv
 import requests
 
 from digest_mode import load_tournament_identifiers, matrix_send_message, run_digest
-from forecasting_tools import MetaculusClient
+from forecasting_tools import GeneralLlm, MetaculusClient
 
 from template_bot_2026 import SpringTemplateBot2026
 
@@ -25,12 +25,20 @@ def _notify_matrix_on_submit(
         for report in forecast_reports
         if not isinstance(report, BaseException)
     ]
-    if not successful_reports:
+    failed_reports = [
+        report for report in forecast_reports if isinstance(report, BaseException)
+    ]
+
+    notify_always = (
+        os.getenv("MATRIX_NOTIFY_ALWAYS", "").strip().lower()
+        in {"1", "true", "yes", "y"}
+    )
+    if not notify_always and not successful_reports and not failed_reports:
         return
 
     now_iso = datetime.now(timezone.utc).isoformat()
     lines = [
-        f"Metaculus bot submitted {len(successful_reports)} forecast(s) ({now_iso[:10]})"
+        f"Metaculus bot run ({now_iso[:10]}): {len(successful_reports)} submitted, {len(failed_reports)} failed"
     ]
     for report in successful_reports[:10]:
         question = getattr(report, "question", None)
@@ -41,6 +49,11 @@ def _notify_matrix_on_submit(
         lines.append(f"- {question_text} ({page_url})")
     if len(successful_reports) > 10:
         lines.append(f"... and {len(successful_reports) - 10} more")
+    if failed_reports:
+        lines.append("")
+        lines.append("Failures (first 5):")
+        for err in failed_reports[:5]:
+            lines.append(f"- {repr(err)[:300]}")
     matrix_send_message("\n".join(lines))
 
 
@@ -109,6 +122,34 @@ if __name__ == "__main__":
         help="Tournament slug/id or URL (repeatable). Extends --tournaments-file.",
     )
     parser.add_argument(
+        "--researcher",
+        type=str,
+        default=None,
+        help=(
+            "Override research strategy/model. Examples: "
+            "'no_research', 'asknews/news-summaries', "
+            "'asknews/deep-research/low-depth', 'smart-searcher/<model>'."
+        ),
+    )
+    parser.add_argument(
+        "--default-model",
+        type=str,
+        default=None,
+        help=(
+            "Override the default LLM model (Litellm format), e.g. "
+            "'openrouter/openai/gpt-oss-120b:free' or 'openrouter/openai/gpt-4o'."
+        ),
+    )
+    parser.add_argument(
+        "--parser-model",
+        type=str,
+        default=None,
+        help=(
+            "Override the parser LLM model used for structured output, e.g. "
+            "'openrouter/openai/gpt-oss-120b:free'."
+        ),
+    )
+    parser.add_argument(
         "--submit",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -134,10 +175,31 @@ if __name__ == "__main__":
         )
         publish_to_metaculus = False
 
+    llms: dict[str, object] | None = None
+    if args.researcher or args.default_model or args.parser_model:
+        llms = {}
+    if args.researcher and llms is not None:
+        llms["researcher"] = args.researcher
+    if args.default_model and llms is not None:
+        llms["default"] = GeneralLlm(
+            model=args.default_model,
+            temperature=0.3,
+            timeout=60,
+            allowed_tries=2,
+        )
+    if args.parser_model and llms is not None:
+        llms["parser"] = GeneralLlm(
+            model=args.parser_model,
+            temperature=0.0,
+            timeout=60,
+            allowed_tries=2,
+        )
+
     template_bot = SpringTemplateBot2026(
         research_reports_per_question=1,
         predictions_per_research_report=5,
         use_research_summary_to_forecast=False,
+        llms=llms,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=(run_mode == "tournament"),

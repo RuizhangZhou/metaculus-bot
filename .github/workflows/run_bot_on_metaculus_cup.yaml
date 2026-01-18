@@ -2,8 +2,22 @@ name: Forecast on Metaculus Cup
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 */2 * *" # runs at midnight every 2 days
+    inputs:
+      researcher:
+        description: "Research strategy/model (e.g. no_research, smart-searcher/openrouter/openai/gpt-oss-120b:free)"
+        required: false
+        default: "no_research"
+        type: string
+      default_model:
+        description: "Default LLM model (Litellm format)"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
+      parser_model:
+        description: "Parser LLM model (Litellm format)"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -15,6 +29,7 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    environment: "metaculus bot"
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
@@ -32,7 +47,14 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          poetry run python main.py --mode metaculus_cup
+          RESEARCHER="${{ github.event.inputs.researcher }}"
+          DEFAULT_MODEL="${{ github.event.inputs.default_model }}"
+          PARSER_MODEL="${{ github.event.inputs.parser_model }}"
+          if [ -z "$RESEARCHER" ]; then RESEARCHER="no_research"; fi
+          if [ -z "$DEFAULT_MODEL" ]; then DEFAULT_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$PARSER_MODEL" ]; then PARSER_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+
+          poetry run python main.py --mode metaculus_cup --researcher "$RESEARCHER" --default-model "$DEFAULT_MODEL" --parser-model "$PARSER_MODEL" --submit
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
@@ -44,3 +66,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+          MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+          MATRIX_NOTIFY_ALWAYS: "true"

@@ -1,15 +1,50 @@
-name: Forecast on new AI tournament questions
+name: Forecast on Spring 2026 AIB (bot submission)
 
 on:
   workflow_dispatch:
+    inputs:
+      tournament:
+        description: "Tournament slug or URL (default: spring-aib-2026)"
+        required: false
+        default: "spring-aib-2026"
+        type: string
+      researcher:
+        description: "Research strategy/model (e.g. no_research, smart-searcher/openrouter/openai/gpt-oss-120b:free, asknews/news-summaries)"
+        required: false
+        default: "smart-searcher/openrouter/openai/gpt-oss-120b:free"
+        type: string
+      default_model:
+        description: "Override default LLM model (Litellm format), e.g. openrouter/openai/gpt-4o"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
+      parser_model:
+        description: "Override parser LLM model (Litellm format), e.g. openrouter/openai/gpt-oss-120b:free"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
+      smart_searcher_num_searches:
+        description: "SmartSearcher: number of searches to run"
+        required: false
+        default: "1"
+        type: string
+      smart_searcher_num_sites_per_search:
+        description: "SmartSearcher: sites per search"
+        required: false
+        default: "5"
+        type: string
+      smart_searcher_use_advanced_filters:
+        description: "SmartSearcher: advanced filters (true/false)"
+        required: false
+        default: "false"
+        type: string
   schedule:
-    - cron: "*/20 * * * *" # runs every 20 minutes. Make sure to skip already forecasted questions!
+    - cron: "0 2 * * *" # daily at 02:00 UTC (adjust as desired)
 
 # Add concurrency group to prevent parallel runs
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
-
 
 # Daily job to run the simple forecast bot
 jobs:
@@ -40,7 +75,27 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          poetry run python main.py --mode tournament --tournaments-file tracked_tournaments.txt
+          TOURNAMENT="${{ github.event.inputs.tournament }}"
+          RESEARCHER="${{ github.event.inputs.researcher }}"
+          DEFAULT_MODEL="${{ github.event.inputs.default_model }}"
+          PARSER_MODEL="${{ github.event.inputs.parser_model }}"
+          SMART_SEARCHER_NUM_SEARCHES="${{ github.event.inputs.smart_searcher_num_searches }}"
+          SMART_SEARCHER_NUM_SITES_PER_SEARCH="${{ github.event.inputs.smart_searcher_num_sites_per_search }}"
+          SMART_SEARCHER_USE_ADVANCED_FILTERS="${{ github.event.inputs.smart_searcher_use_advanced_filters }}"
+
+          if [ -z "$TOURNAMENT" ]; then TOURNAMENT="spring-aib-2026"; fi
+          if [ -z "$RESEARCHER" ]; then RESEARCHER="smart-searcher/openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$DEFAULT_MODEL" ]; then DEFAULT_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$PARSER_MODEL" ]; then PARSER_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$SMART_SEARCHER_NUM_SEARCHES" ]; then SMART_SEARCHER_NUM_SEARCHES="1"; fi
+          if [ -z "$SMART_SEARCHER_NUM_SITES_PER_SEARCH" ]; then SMART_SEARCHER_NUM_SITES_PER_SEARCH="5"; fi
+          if [ -z "$SMART_SEARCHER_USE_ADVANCED_FILTERS" ]; then SMART_SEARCHER_USE_ADVANCED_FILTERS="false"; fi
+
+          export SMART_SEARCHER_NUM_SEARCHES
+          export SMART_SEARCHER_NUM_SITES_PER_SEARCH
+          export SMART_SEARCHER_USE_ADVANCED_FILTERS
+
+          poetry run python main.py --mode tournament --tournament "$TOURNAMENT" --researcher "$RESEARCHER" --default-model "$DEFAULT_MODEL" --parser-model "$PARSER_MODEL" --submit
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
@@ -55,3 +110,4 @@ jobs:
           MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
           MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+          MATRIX_NOTIFY_ALWAYS: "true"

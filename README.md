@@ -41,6 +41,7 @@ The workflows live in `.github/workflows/`.
 - `run_bot_on_tournament.yaml` runs `python main.py --mode tournament --tournaments-file tracked_tournaments.txt` on a schedule (and submits forecasts).
 - `daily_digest.yaml` runs `python main.py --mode digest` daily (no submission) and can notify via Matrix if significant changes are detected.
 - To change which tournaments are used, edit `tracked_tournaments.txt`.
+- Both workflows expose `workflow_dispatch` inputs so you can override `researcher`/models from the Actions UI without committing code changes.
 
 ## Daily digest (no submission)
 If you want the bot to *analyze questions for you* without auto-submitting forecasts to Metaculus, use `--mode digest`.
@@ -53,6 +54,14 @@ If you want the bot to *analyze questions for you* without auto-submitting forec
   - `reports/digest/digest_YYYY-MM-DD.md` (same content, dated)
   - `.state/digest_state.json` (cached state used for comparisons)
 - GitHub Actions: enable `.github/workflows/daily_digest.yaml` and set the same API key secrets as the normal bot. Optionally set Matrix secrets (`MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN`, `MATRIX_ROOM_ID`) to get a notification when significant changes are detected.
+
+## Research providers (AskNews / others)
+- AskNews research is optional. If your AskNews plan does not allow API access, runs may fail unless you disable it.
+- Disable research (cheapest/minimal): `poetry run python main.py --mode tournament --tournament climate --no-submit --researcher no_research`
+- Use web search (requires `EXA_API_KEY` or `PERPLEXITY_API_KEY`): `poetry run python main.py --mode tournament --tournament climate --no-submit --researcher smart-searcher/openrouter/openai/gpt-oss-120b:free`
+- Override models (Litellm format): `--default-model openrouter/openai/gpt-oss-120b:free --parser-model openrouter/openai/gpt-oss-120b:free`
+- SmartSearcher “simple search” knobs: set `SMART_SEARCHER_NUM_SEARCHES` and `SMART_SEARCHER_NUM_SITES_PER_SEARCH` in `.env`.
+- Note: some OpenRouter `:free` models (e.g. `openrouter/openai/gpt-oss-120b:free`) require enabling "Free model publication" in your OpenRouter privacy settings, otherwise you may see a 404 "No endpoints found matching your data policy".
 
 ## Editing in GitHub UI
 Remember that you can edit a bot non locally by clicking on a file in Github, and then clicking the 'Edit this file' button. Whether you develop locally or not, when making edits, attempt to do things that you think others have not tried, as this will help further innovation in the field more than doing something that has already been done. Feel free to ask about what has or has not been tried in the Discord, see [other bot's self-descriptions](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#what-are-other-bots-doing), or read bot's [open source code](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#open-source-bots).
