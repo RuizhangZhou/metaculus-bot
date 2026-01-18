@@ -9,19 +9,19 @@ on:
         default: "spring-aib-2026"
         type: string
       researcher:
-        description: "Research strategy/model (e.g. no_research, smart-searcher/openrouter/openai/gpt-oss-120b:free, asknews/news-summaries)"
+        description: "Research strategy/model (e.g. no_research, smart-searcher/openrouter/openai/gpt-4o-mini, asknews/news-summaries)"
         required: false
-        default: "smart-searcher/openrouter/openai/gpt-oss-120b:free"
+        default: "smart-searcher/openrouter/openai/gpt-4o-mini"
         type: string
       default_model:
         description: "Override default LLM model (Litellm format), e.g. openrouter/openai/gpt-4o"
         required: false
-        default: "openrouter/openai/gpt-oss-120b:free"
+        default: "openrouter/openai/gpt-4o-mini"
         type: string
       parser_model:
-        description: "Override parser LLM model (Litellm format), e.g. openrouter/openai/gpt-oss-120b:free"
+        description: "Override parser LLM model (Litellm format), e.g. openrouter/openai/gpt-4o-mini"
         required: false
-        default: "openrouter/openai/gpt-oss-120b:free"
+        default: "openrouter/openai/gpt-4o-mini"
         type: string
       smart_searcher_num_searches:
         description: "SmartSearcher: number of searches to run"
@@ -84,9 +84,9 @@ jobs:
           SMART_SEARCHER_USE_ADVANCED_FILTERS="${{ github.event.inputs.smart_searcher_use_advanced_filters }}"
 
           if [ -z "$TOURNAMENT" ]; then TOURNAMENT="spring-aib-2026"; fi
-          if [ -z "$RESEARCHER" ]; then RESEARCHER="smart-searcher/openrouter/openai/gpt-oss-120b:free"; fi
-          if [ -z "$DEFAULT_MODEL" ]; then DEFAULT_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
-          if [ -z "$PARSER_MODEL" ]; then PARSER_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$RESEARCHER" ]; then RESEARCHER="smart-searcher/openrouter/openai/gpt-4o-mini"; fi
+          if [ -z "$DEFAULT_MODEL" ]; then DEFAULT_MODEL="openrouter/openai/gpt-4o-mini"; fi
+          if [ -z "$PARSER_MODEL" ]; then PARSER_MODEL="openrouter/openai/gpt-4o-mini"; fi
           if [ -z "$SMART_SEARCHER_NUM_SEARCHES" ]; then SMART_SEARCHER_NUM_SEARCHES="1"; fi
           if [ -z "$SMART_SEARCHER_NUM_SITES_PER_SEARCH" ]; then SMART_SEARCHER_NUM_SITES_PER_SEARCH="5"; fi
           if [ -z "$SMART_SEARCHER_USE_ADVANCED_FILTERS" ]; then SMART_SEARCHER_USE_ADVANCED_FILTERS="false"; fi

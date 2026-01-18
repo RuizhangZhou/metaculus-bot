@@ -88,6 +88,35 @@ def _validate_and_normalize_metaculus_token() -> None:
         raise SystemExit(message)
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            f"Ignoring invalid integer for {name}: {raw!r}"
+        )
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    logging.getLogger(__name__).warning(f"Ignoring invalid boolean for {name}: {raw!r}")
+    return default
+
+
 if __name__ == "__main__":
     dotenv.load_dotenv()
     logging.basicConfig(
@@ -205,15 +234,31 @@ if __name__ == "__main__":
             allowed_tries=2,
         )
 
+    research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 1)
+    predictions_per_research_report = _env_int(
+        "BOT_PREDICTIONS_PER_RESEARCH_REPORT", 5
+    )
+    if research_reports_per_question <= 0:
+        raise SystemExit("BOT_RESEARCH_REPORTS_PER_QUESTION must be >= 1")
+    if predictions_per_research_report <= 0:
+        raise SystemExit("BOT_PREDICTIONS_PER_RESEARCH_REPORT must be >= 1")
+
+    summarize_env_is_set = os.getenv("BOT_ENABLE_SUMMARIZE_RESEARCH") is not None
+    enable_summarize_research = _env_bool("BOT_ENABLE_SUMMARIZE_RESEARCH", True)
+    if not summarize_env_is_set and args.researcher:
+        if args.researcher.strip().lower() == "no_research":
+            enable_summarize_research = False
+
     template_bot = SpringTemplateBot2026(
-        research_reports_per_question=1,
-        predictions_per_research_report=5,
+        research_reports_per_question=research_reports_per_question,
+        predictions_per_research_report=predictions_per_research_report,
         use_research_summary_to_forecast=False,
         llms=llms,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=(run_mode == "tournament"),
         extra_metadata_in_explanation=True,
+        enable_summarize_research=enable_summarize_research,
     )
 
     client = MetaculusClient()
@@ -322,6 +367,13 @@ if __name__ == "__main__":
             raise SystemExit(message) from e
         raise
 
-    template_bot.log_report_summary(forecast_reports)  # type: ignore[arg-type]
-    if publish_to_metaculus:
-        _notify_matrix_on_submit(run_mode=run_mode, forecast_reports=forecast_reports)
+    fail_on_errors = _env_bool("BOT_FAIL_ON_ERRORS", run_mode == "test_questions")
+    try:
+        template_bot.log_report_summary(  # type: ignore[arg-type]
+            forecast_reports, raise_errors=fail_on_errors
+        )
+    finally:
+        if publish_to_metaculus:
+            _notify_matrix_on_submit(
+                run_mode=run_mode, forecast_reports=forecast_reports
+            )

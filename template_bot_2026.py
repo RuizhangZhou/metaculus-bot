@@ -20,6 +20,7 @@ import requests
 from forecasting_tools import (
     AskNewsSearcher,
     BinaryQuestion,
+    ForecastReport,
     ForecastBot,
     GeneralLlm,
     MetaculusClient,
@@ -44,6 +45,20 @@ from forecasting_tools import (
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"Ignoring invalid integer for {name}: {raw!r}")
+        return default
 
 
 class SpringTemplateBot2026(ForecastBot):
@@ -129,6 +144,103 @@ class SpringTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    ################################# CONCURRENCY ###################################
+
+    async def forecast_questions(
+        self,
+        questions,
+        return_exceptions: bool = False,
+    ):
+        """
+        Concurrency guardrail.
+
+        The upstream ForecastBot runs all questions concurrently via asyncio.gather,
+        which can easily trigger provider rate limits (especially OpenRouter :free
+        models). Set env vars to throttle:
+        - BOT_MAX_CONCURRENT_QUESTIONS (default: 1; set 0 to disable throttling)
+        - BOT_MAX_CONCURRENT_TASKS (default: 1; limits internal gathers like
+          predictions_per_research_report)
+        """
+
+        max_concurrent_questions = _env_int("BOT_MAX_CONCURRENT_QUESTIONS", 1)
+        if max_concurrent_questions <= 0:
+            return await super().forecast_questions(
+                questions, return_exceptions=return_exceptions
+            )
+
+        if self.skip_previously_forecasted_questions:
+            unforecasted_questions = [
+                question
+                for question in questions
+                if not getattr(question, "already_forecasted", False)
+            ]
+            if len(questions) != len(unforecasted_questions):
+                logger.info(
+                    f"Skipping {len(questions) - len(unforecasted_questions)} previously forecasted questions"
+                )
+            questions = unforecasted_questions
+
+        if max_concurrent_questions == 1:
+            reports = []
+            for question in questions:
+                try:
+                    reports.append(
+                        await self._run_individual_question_with_error_propagation(
+                            question
+                        )
+                    )
+                except BaseException as e:
+                    if not return_exceptions:
+                        raise
+                    reports.append(e)
+                    if "free-models-per-day" in str(e):
+                        logger.error(
+                            "OpenRouter free model daily quota exhausted; stopping early. "
+                            "Use a paid model (e.g. openrouter/openai/gpt-oss-20b) or add credits to raise free quotas."
+                        )
+                        break
+        else:
+            semaphore = asyncio.Semaphore(max_concurrent_questions)
+
+            async def run_one(question):
+                async with semaphore:
+                    return await self._run_individual_question_with_error_propagation(
+                        question
+                    )
+
+            reports = await asyncio.gather(
+                *[run_one(question) for question in questions],
+                return_exceptions=return_exceptions,
+            )
+
+        if self.folder_to_save_reports_to:
+            non_exception_reports = [
+                report
+                for report in reports
+                if not isinstance(report, BaseException)
+            ]
+            questions_as_list = list(questions)
+            file_path = self._create_file_path_to_save_to(questions_as_list)
+            ForecastReport.save_object_list_to_file_path(
+                non_exception_reports, file_path
+            )
+
+        return reports
+
+    async def _gather_results_and_exceptions(self, coroutines):
+        max_concurrent_tasks = _env_int("BOT_MAX_CONCURRENT_TASKS", 1)
+        if max_concurrent_tasks <= 0:
+            return await super()._gather_results_and_exceptions(coroutines)
+
+        semaphore = asyncio.Semaphore(max_concurrent_tasks)
+
+        async def limited(coro):
+            async with semaphore:
+                return await coro
+
+        wrapped = [limited(coro) for coro in coroutines]
+        return await super()._gather_results_and_exceptions(wrapped)
 
     ##################################### RESEARCH #####################################
 
