@@ -19,7 +19,7 @@ on:
         default: "openrouter/openai/gpt-4o-mini"
         type: string
   schedule:
-    - cron: "0 2 * * *" # daily at 02:00 UTC
+    - cron: "0 12 * * *" # daily at 20:00 Asia/Shanghai (12:00 UTC)
 
 concurrency:
   group: ${{ github.workflow }}
@@ -66,6 +66,8 @@ jobs:
           poetry run python main.py --mode digest --researcher "$RESEARCHER" --default-model "$DEFAULT_MODEL" --parser-model "$PARSER_MODEL"
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          METACULUS_TRACK_TOKEN: ${{ secrets.METACULUS_TRACK_TOKEN }}
+          BOT_MAX_TOKENS: "4096"
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -83,3 +85,10 @@ jobs:
           name: metaculus-digest
           path: reports/digest
           if-no-files-found: error
+
+      - name: Upload digest state
+        uses: actions/upload-artifact@v4
+        with:
+          name: metaculus-digest-state
+          path: .state/digest_state.json
+          if-no-files-found: warn

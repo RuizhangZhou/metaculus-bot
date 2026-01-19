@@ -209,12 +209,18 @@ if __name__ == "__main__":
         llms = {}
     if args.researcher and llms is not None:
         llms["researcher"] = args.researcher
+
+    max_tokens = _env_int("BOT_MAX_TOKENS", 0)
+    llm_max_tokens_kwargs: dict[str, int] = (
+        {"max_tokens": max_tokens} if max_tokens > 0 else {}
+    )
     if args.default_model and llms is not None:
         default_llm = GeneralLlm(
             model=args.default_model,
             temperature=0.3,
             timeout=60,
             allowed_tries=2,
+            **llm_max_tokens_kwargs,
         )
         llms["default"] = default_llm
         llms.setdefault(
@@ -224,6 +230,7 @@ if __name__ == "__main__":
                 temperature=0.0,
                 timeout=60,
                 allowed_tries=2,
+                **llm_max_tokens_kwargs,
             ),
         )
     if args.parser_model and llms is not None:
@@ -232,6 +239,7 @@ if __name__ == "__main__":
             temperature=0.0,
             timeout=60,
             allowed_tries=2,
+            **llm_max_tokens_kwargs,
         )
 
     research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 1)

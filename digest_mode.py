@@ -21,6 +21,18 @@ from forecasting_tools import (
 logger = logging.getLogger(__name__)
 
 
+def _normalize_metaculus_token(token: str | None) -> str:
+    if token is None:
+        return ""
+    stripped = token.strip()
+    lowered = stripped.lower()
+    if lowered.startswith("token "):
+        stripped = stripped.split(None, 1)[1].strip()
+    elif lowered.startswith("bearer "):
+        stripped = stripped.split(None, 1)[1].strip()
+    return stripped
+
+
 def extract_tournament_identifier(value: str) -> str | None:
     raw = value.strip()
     if not raw or raw.startswith("#"):
@@ -325,6 +337,234 @@ def matrix_send_message(message: str) -> None:
         logger.warning(f"Matrix send failed: {response.status_code} {response.text}")
 
 
+def _metaculus_get_post_json(*, post_id: int, token: str, timeout: int = 30) -> dict:
+    url = f"https://www.metaculus.com/api/posts/{post_id}/"
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Token {token}"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError(f"Unexpected post JSON type for {post_id}: {type(data)}")
+    return data
+
+
+def _select_question_json_from_post_json(
+    post_json: dict, question_id: int | None
+) -> dict | None:
+    question = post_json.get("question")
+    if not isinstance(question, dict):
+        return None
+
+    if question_id is None or question.get("id") == question_id:
+        return question
+
+    group = post_json.get("group_of_questions")
+    if isinstance(group, dict):
+        group_questions = group.get("questions")
+        if isinstance(group_questions, list):
+            for q in group_questions:
+                if isinstance(q, dict) and q.get("id") == question_id:
+                    return q
+
+    for key in ("question_yes", "question_no", "condition", "condition_child"):
+        nested = question.get(key)
+        if isinstance(nested, dict) and nested.get("id") == question_id:
+            return nested
+
+    return question
+
+
+def _latest_forecast_entry(my_forecasts: object) -> dict | None:
+    if not isinstance(my_forecasts, dict):
+        return None
+
+    latest = my_forecasts.get("latest")
+    if isinstance(latest, dict):
+        return latest
+
+    history = my_forecasts.get("history")
+    if isinstance(history, list) and history:
+        last = history[-1]
+        if isinstance(last, dict):
+            return last
+
+    return None
+
+
+def _extract_account_prediction_from_question_json(
+    *, question_json: dict, question_type: str
+) -> object | None:
+    latest = _latest_forecast_entry(question_json.get("my_forecasts"))
+    if not isinstance(latest, dict):
+        return None
+
+    forecast_values = latest.get("forecast_values")
+
+    if question_type == "binary":
+        probability_yes = latest.get("probability_yes")
+        if isinstance(probability_yes, (int, float)):
+            return float(probability_yes)
+        if (
+            isinstance(forecast_values, list)
+            and len(forecast_values) >= 2
+            and isinstance(forecast_values[1], (int, float))
+        ):
+            return float(forecast_values[1])
+        return None
+
+    if question_type == "multiple_choice":
+        per_category = latest.get("probability_yes_per_category")
+        if isinstance(per_category, dict):
+            mapped = {
+                str(k): float(v)
+                for k, v in per_category.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+            return mapped or None
+
+        if not isinstance(forecast_values, list):
+            return None
+
+        options_raw = question_json.get("options")
+        options: list[str] = []
+        if isinstance(options_raw, list):
+            for opt in options_raw:
+                if isinstance(opt, str):
+                    options.append(opt)
+                elif isinstance(opt, dict):
+                    name = opt.get("name") or opt.get("label") or opt.get("title")
+                    if isinstance(name, str):
+                        options.append(name)
+
+        if options and len(options) == len(forecast_values):
+            mapped = {
+                option: float(prob)
+                for option, prob in zip(options, forecast_values)
+                if isinstance(option, str) and isinstance(prob, (int, float))
+            }
+            return mapped or None
+        return None
+
+    if question_type in {"numeric", "date", "discrete"}:
+        if not isinstance(forecast_values, list) or not forecast_values:
+            return None
+
+        scaling = question_json.get("scaling")
+        continuous_range: list[float] | None = None
+        if isinstance(scaling, dict) and isinstance(scaling.get("continuous_range"), list):
+            continuous_range = [
+                float(x) for x in scaling["continuous_range"] if isinstance(x, (int, float))
+            ]
+        elif isinstance(scaling, dict):
+            range_min = scaling.get("range_min")
+            range_max = scaling.get("range_max")
+            if (
+                isinstance(range_min, (int, float))
+                and isinstance(range_max, (int, float))
+                and len(forecast_values) > 1
+            ):
+                step = (float(range_max) - float(range_min)) / (len(forecast_values) - 1)
+                continuous_range = [float(range_min) + step * i for i in range(len(forecast_values))]
+
+        if (
+            not isinstance(continuous_range, list)
+            or len(continuous_range) != len(forecast_values)
+        ):
+            return None
+
+        declared_percentiles: list[dict[str, float]] = []
+        for x, cdf in zip(continuous_range, forecast_values):
+            if not isinstance(cdf, (int, float)):
+                continue
+            declared_percentiles.append({"percentile": float(cdf), "value": float(x)})
+        return {"declared_percentiles": declared_percentiles} if declared_percentiles else None
+
+    return None
+
+
+def _extract_account_prediction_from_post_json(
+    *, post_json: dict, question_id: int | None, question_type: str
+) -> object | None:
+    question_json = _select_question_json_from_post_json(post_json, question_id)
+    if not isinstance(question_json, dict):
+        return None
+    return _extract_account_prediction_from_question_json(
+        question_json=question_json, question_type=question_type
+    )
+
+
+def _approx_value_at_percentile(pmap: dict[float, float], target: float) -> float | None:
+    if not pmap:
+        return None
+    nearest = min(pmap.keys(), key=lambda p: abs(p - target))
+    return pmap[nearest]
+
+
+def _format_prediction_for_markdown(*, pred: object | None, question_type: str) -> str:
+    if pred is None:
+        return "(none)"
+
+    if question_type == "binary" and isinstance(pred, (int, float)):
+        return f"{float(pred) * 100:.1f}%"
+
+    if question_type == "multiple_choice" and isinstance(pred, dict):
+        m: dict[str, float] = {}
+        if "predicted_options" in pred and isinstance(pred["predicted_options"], list):
+            for item in pred["predicted_options"]:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("option_name")
+                prob = item.get("probability")
+                if isinstance(name, str) and isinstance(prob, (int, float)):
+                    m[name] = float(prob)
+        else:
+            m = {
+                k: float(v)
+                for k, v in pred.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+        if m:
+            top = sorted(m.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            return ", ".join([f"{k}={v*100:.1f}%" for k, v in top])
+        return "(unparseable multiple-choice prediction)"
+
+    if question_type in {"numeric", "date", "discrete"} and isinstance(pred, dict):
+        pmap = _get_numeric_percentile_map(pred)
+        p10 = _approx_value_at_percentile(pmap, 0.1)
+        p50 = _approx_value_at_percentile(pmap, 0.5)
+        p90 = _approx_value_at_percentile(pmap, 0.9)
+        if p50 is None:
+            return "(missing numeric median)"
+        if question_type == "date":
+            def fmt_ts(ts: float | None) -> str:
+                if ts is None:
+                    return "?"
+                try:
+                    return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                except Exception:
+                    return str(ts)
+
+            return f"p50≈{fmt_ts(p50)} (p10≈{fmt_ts(p10)}, p90≈{fmt_ts(p90)})"
+
+        def fmt_num(x: float | None) -> str:
+            if x is None:
+                return "?"
+            return f"{x:.4g}"
+
+        return f"p50≈{fmt_num(p50)} (p10≈{fmt_num(p10)}, p90≈{fmt_num(p90)})"
+
+    try:
+        text = json.dumps(pred, ensure_ascii=False)
+    except Exception:
+        text = str(pred)
+    if len(text) > 500:
+        return text[:500] + "…"
+    return text
+
+
 async def run_digest(
     *,
     template_bot: ForecastBot,
@@ -333,6 +573,27 @@ async def run_digest(
     out_dir: Path,
 ) -> None:
     from forecasting_tools.data_models.data_organizer import DataOrganizer
+
+    compare_mode = os.getenv("DIGEST_COMPARE_MODE", "account").strip().lower()
+    if compare_mode not in {"account", "state"}:
+        logger.warning(f"Unknown DIGEST_COMPARE_MODE={compare_mode!r}; using 'account'")
+        compare_mode = "account"
+
+    max_questions_per_tournament: int | None = None
+    max_questions_raw = os.getenv("DIGEST_MAX_QUESTIONS_PER_TOURNAMENT")
+    if max_questions_raw is not None and max_questions_raw.strip():
+        try:
+            max_questions_per_tournament = int(max_questions_raw.strip())
+        except ValueError:
+            logger.warning(
+                f"Ignoring invalid DIGEST_MAX_QUESTIONS_PER_TOURNAMENT={max_questions_raw!r}"
+            )
+            max_questions_per_tournament = None
+
+    track_token = _normalize_metaculus_token(os.getenv("METACULUS_TRACK_TOKEN"))
+    if track_token and any(ch.isspace() for ch in track_token):
+        logger.warning("METACULUS_TRACK_TOKEN contains whitespace; ignoring it.")
+        track_token = ""
 
     out_dir.mkdir(parents=True, exist_ok=True)
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -352,7 +613,10 @@ async def run_digest(
 
     new_state_questions: dict[str, dict] = {}
     significant_changes: list[dict] = []
+    significant_changes_by_account: dict[str, list[dict]] = {"bot": [], "track": []}
+    unforecasted_by_account: dict[str, list[dict]] = {"bot": [], "track": []}
     failures: list[dict] = []
+    track_post_cache: dict[int, dict] = {}
 
     def safe_report_attr(report: object, attr: str) -> str | None:
         try:
@@ -362,9 +626,22 @@ async def run_digest(
 
     for tournament_id in tournaments:
         try:
-            reports_or_errors = await template_bot.forecast_on_tournament(
-                tournament_id, return_exceptions=True
-            )
+            if max_questions_per_tournament is None:
+                reports_or_errors = await template_bot.forecast_on_tournament(
+                    tournament_id, return_exceptions=True
+                )
+            else:
+                from forecasting_tools import MetaculusClient
+
+                client = MetaculusClient()
+                questions = client.get_all_open_questions_from_tournament(tournament_id)
+                if max_questions_per_tournament <= 0:
+                    questions = []
+                else:
+                    questions = questions[:max_questions_per_tournament]
+                reports_or_errors = await template_bot.forecast_questions(
+                    questions, return_exceptions=True
+                )
         except Exception as e:
             failures.append({"tournament": tournament_id, "error": str(e)})
             continue
@@ -420,42 +697,130 @@ async def run_digest(
             }
             new_state_questions[key] = state_snapshot
 
-            old_snapshot = previous_questions.get(key)
-            old_pred = (
-                old_snapshot.get("prediction") if isinstance(old_snapshot, dict) else None
-            )
-            old_close_time = (
-                old_snapshot.get("close_time") if isinstance(old_snapshot, dict) else None
+            if compare_mode == "state":
+                old_snapshot = previous_questions.get(key)
+                old_pred = (
+                    old_snapshot.get("prediction")
+                    if isinstance(old_snapshot, dict)
+                    else None
+                )
+                old_close_time = (
+                    old_snapshot.get("close_time")
+                    if isinstance(old_snapshot, dict)
+                    else None
+                )
+
+                significant, reason = _is_significant_change(
+                    old_pred=old_pred,
+                    new_pred=prediction_jsonable,
+                    question_type=qtype,
+                    close_time_iso=close_time_iso,
+                    old_close_time_iso=old_close_time,
+                )
+                if significant:
+                    significant_changes.append(
+                        {
+                            "key": key,
+                            "tournament": tournament_id,
+                            "page_url": question.page_url,
+                            "question_text": question.question_text,
+                            "question_type": qtype,
+                            "close_time": close_time_iso,
+                            "reason": reason,
+                            "old_prediction": old_pred,
+                            "new_prediction": prediction_jsonable,
+                            "readable_prediction": readable_prediction,
+                            "summary": safe_report_attr(report, "summary"),
+                            "research": safe_report_attr(report, "research"),
+                            "forecast_rationales": safe_report_attr(
+                                report, "forecast_rationales"
+                            ),
+                            "explanation": getattr(report, "explanation", None),
+                        }
+                    )
+                continue
+
+            bot_baseline = _extract_account_prediction_from_post_json(
+                post_json=getattr(question, "api_json", {}) or {},
+                question_id=question.id_of_question,
+                question_type=qtype,
             )
 
-            significant, reason = _is_significant_change(
-                old_pred=old_pred,
-                new_pred=prediction_jsonable,
-                question_type=qtype,
-                close_time_iso=close_time_iso,
-                old_close_time_iso=old_close_time,
-            )
-            if significant:
-                significant_changes.append(
-                    {
-                        "key": key,
-                        "tournament": tournament_id,
-                        "page_url": question.page_url,
-                        "question_text": question.question_text,
-                        "question_type": qtype,
-                        "close_time": close_time_iso,
-                        "reason": reason,
-                        "old_prediction": old_pred,
-                        "new_prediction": prediction_jsonable,
-                        "readable_prediction": readable_prediction,
-                        "summary": safe_report_attr(report, "summary"),
-                        "research": safe_report_attr(report, "research"),
-                        "forecast_rationales": safe_report_attr(
-                            report, "forecast_rationales"
-                        ),
-                        "explanation": getattr(report, "explanation", None),
-                    }
+            track_baseline: object | None = None
+            if track_token and question.id_of_post:
+                post_id = int(question.id_of_post)
+                post_json_for_track = track_post_cache.get(post_id)
+                if post_json_for_track is None:
+                    try:
+                        post_json_for_track = _metaculus_get_post_json(
+                            post_id=post_id, token=track_token
+                        )
+                        track_post_cache[post_id] = post_json_for_track
+                    except Exception as e:
+                        failures.append(
+                            {
+                                "tournament": tournament_id,
+                                "post_id": post_id,
+                                "error": f"Failed to fetch post as track account: {e}",
+                            }
+                        )
+                        post_json_for_track = None
+                if isinstance(post_json_for_track, dict):
+                    track_baseline = _extract_account_prediction_from_post_json(
+                        post_json=post_json_for_track,
+                        question_id=question.id_of_question,
+                        question_type=qtype,
+                    )
+
+            comparisons = [
+                ("bot", bot_baseline),
+            ]
+            if track_token:
+                comparisons.append(("track", track_baseline))
+
+            for account_name, baseline in comparisons:
+                if baseline is None:
+                    unforecasted_by_account[account_name].append(
+                        {
+                            "key": key,
+                            "tournament": tournament_id,
+                            "page_url": question.page_url,
+                            "question_text": question.question_text,
+                            "question_type": qtype,
+                            "close_time": close_time_iso,
+                        }
+                    )
+                    continue
+
+                significant, reason = _is_significant_change(
+                    old_pred=baseline,
+                    new_pred=prediction_jsonable,
+                    question_type=qtype,
+                    close_time_iso=close_time_iso,
+                    old_close_time_iso=None,
                 )
+                if not significant:
+                    continue
+
+                change = {
+                    "key": key,
+                    "account": account_name,
+                    "tournament": tournament_id,
+                    "page_url": question.page_url,
+                    "question_text": question.question_text,
+                    "question_type": qtype,
+                    "close_time": close_time_iso,
+                    "reason": reason,
+                    "account_prediction": baseline,
+                    "ai_prediction": prediction_jsonable,
+                    "readable_prediction": readable_prediction,
+                    "summary": safe_report_attr(report, "summary"),
+                    "research": safe_report_attr(report, "research"),
+                    "forecast_rationales": safe_report_attr(report, "forecast_rationales"),
+                    "explanation": getattr(report, "explanation", None),
+                }
+                significant_changes.append(change)
+                significant_changes_by_account[account_name].append(change)
 
     new_state = {"version": 1, "generated_at": now_iso, "questions": new_state_questions}
     state_path.write_text(
@@ -466,53 +831,164 @@ async def run_digest(
     changes_path = out_dir / "changes.md"
     failures_path = out_dir / "failures.json"
 
-    def fmt_pred(pred: object | None) -> str:
-        if pred is None:
-            return "(none)"
-        try:
-            return json.dumps(pred, ensure_ascii=False)
-        except Exception:
-            return str(pred)
+    def fmt_pred(pred: object | None, qtype: str) -> str:
+        return _format_prediction_for_markdown(pred=pred, question_type=qtype)
 
     lines: list[str] = []
     lines.append(f"# Metaculus digest ({now_iso})")
+    lines.append("")
+    lines.append(f"- Compare mode: `{compare_mode}`")
+    lines.append(
+        f"- Max questions/tournament: `{max_questions_per_tournament if max_questions_per_tournament is not None else 'all'}`"
+    )
+    lines.append(f"- Track account enabled: `{bool(track_token)}`")
     lines.append("")
     lines.append("## Tournaments")
     for tid in tournaments:
         lines.append(f"- {tid}")
     lines.append("")
 
-    lines.append(f"## Significant changes ({len(significant_changes)})")
-    if not significant_changes:
+    if compare_mode == "state":
+        lines.append(f"## Significant changes ({len(significant_changes)})")
+        if not significant_changes:
+            lines.append("- (none)")
+        else:
+            for ch in significant_changes:
+                url = ch.get("page_url") or ch.get("key")
+                qtype = ch.get("question_type") or "unknown"
+                lines.append(f"### {ch['question_text']}")
+                lines.append(f"- Tournament: {ch['tournament']}")
+                lines.append(f"- URL: {url}")
+                if ch.get("close_time"):
+                    lines.append(f"- Close time (UTC): {ch['close_time']}")
+                lines.append(f"- Type: {qtype}")
+                lines.append(f"- Reason: {ch['reason']}")
+                lines.append(f"- Old: {fmt_pred(ch.get('old_prediction'), qtype)}")
+                lines.append(f"- New: {fmt_pred(ch.get('new_prediction'), qtype)}")
+                lines.append("")
+                lines.append("**Readable prediction**")
+                lines.append(ch.get("readable_prediction") or "")
+                lines.append("")
+                if ch.get("summary"):
+                    lines.append("**Report summary**")
+                    lines.append(str(ch["summary"]))
+                    lines.append("")
+                if ch.get("research"):
+                    lines.append("**Report research**")
+                    lines.append(str(ch["research"]))
+                    lines.append("")
+                if ch.get("forecast_rationales"):
+                    lines.append("**Report forecast**")
+                    lines.append(str(ch["forecast_rationales"]))
+                    lines.append("")
+    else:
+        bot_changes = significant_changes_by_account.get("bot") or []
+        track_changes = significant_changes_by_account.get("track") or []
+
+        lines.append(f"## Significant diffs vs bot account ({len(bot_changes)})")
+        if not bot_changes:
+            lines.append("- (none)")
+        else:
+            for ch in bot_changes:
+                url = ch.get("page_url") or ch.get("key")
+                qtype = ch.get("question_type") or "unknown"
+                lines.append(f"### {ch['question_text']}")
+                lines.append(f"- Tournament: {ch['tournament']}")
+                lines.append(f"- URL: {url}")
+                if ch.get("close_time"):
+                    lines.append(f"- Close time (UTC): {ch['close_time']}")
+                lines.append(f"- Type: {qtype}")
+                lines.append(f"- Reason: {ch['reason']}")
+                lines.append(f"- Bot current: {fmt_pred(ch.get('account_prediction'), qtype)}")
+                lines.append(f"- AI new: {fmt_pred(ch.get('ai_prediction'), qtype)}")
+                lines.append("")
+                lines.append("**Readable prediction**")
+                lines.append(ch.get("readable_prediction") or "")
+                lines.append("")
+                if ch.get("summary"):
+                    lines.append("**Report summary**")
+                    lines.append(str(ch["summary"]))
+                    lines.append("")
+                if ch.get("research"):
+                    lines.append("**Report research**")
+                    lines.append(str(ch["research"]))
+                    lines.append("")
+                if ch.get("forecast_rationales"):
+                    lines.append("**Report forecast**")
+                    lines.append(str(ch["forecast_rationales"]))
+                    lines.append("")
+
+        if track_token:
+            lines.append(f"## Significant diffs vs tracked account ({len(track_changes)})")
+            if not track_changes:
+                lines.append("- (none)")
+            else:
+                for ch in track_changes:
+                    url = ch.get("page_url") or ch.get("key")
+                    qtype = ch.get("question_type") or "unknown"
+                    lines.append(f"### {ch['question_text']}")
+                    lines.append(f"- Tournament: {ch['tournament']}")
+                    lines.append(f"- URL: {url}")
+                    if ch.get("close_time"):
+                        lines.append(f"- Close time (UTC): {ch['close_time']}")
+                    lines.append(f"- Type: {qtype}")
+                    lines.append(f"- Reason: {ch['reason']}")
+                    lines.append(f"- Tracked current: {fmt_pred(ch.get('account_prediction'), qtype)}")
+                    lines.append(f"- AI new: {fmt_pred(ch.get('ai_prediction'), qtype)}")
+                    lines.append("")
+                    lines.append("**Readable prediction**")
+                    lines.append(ch.get("readable_prediction") or "")
+                    lines.append("")
+                    if ch.get("summary"):
+                        lines.append("**Report summary**")
+                        lines.append(str(ch["summary"]))
+                        lines.append("")
+                    if ch.get("research"):
+                        lines.append("**Report research**")
+                        lines.append(str(ch["research"]))
+                        lines.append("")
+                    if ch.get("forecast_rationales"):
+                        lines.append("**Report forecast**")
+                        lines.append(str(ch["forecast_rationales"]))
+                        lines.append("")
+
+        unforecasted_bot = unforecasted_by_account.get("bot") or []
+        unforecasted_track = unforecasted_by_account.get("track") or []
+        lines.append(f"## Unforecasted by bot account ({len(unforecasted_bot)})")
+        if not unforecasted_bot:
+            lines.append("- (none)")
+        else:
+            for item in unforecasted_bot[:50]:
+                url = item.get("page_url") or item.get("key")
+                lines.append(f"- {item.get('tournament')}: {item.get('question_text')} ({url})")
+            if len(unforecasted_bot) > 50:
+                lines.append(f"- ... and {len(unforecasted_bot) - 50} more")
+
+        if track_token:
+            lines.append(f"## Unforecasted by tracked account ({len(unforecasted_track)})")
+            if not unforecasted_track:
+                lines.append("- (none)")
+            else:
+                for item in unforecasted_track[:50]:
+                    url = item.get("page_url") or item.get("key")
+                    lines.append(
+                        f"- {item.get('tournament')}: {item.get('question_text')} ({url})"
+                    )
+                if len(unforecasted_track) > 50:
+                    lines.append(f"- ... and {len(unforecasted_track) - 50} more")
+
+    lines.append("")
+    lines.append(f"## Failures ({len(failures)})")
+    if not failures:
         lines.append("- (none)")
     else:
-        for ch in significant_changes:
-            url = ch.get("page_url") or ch.get("key")
-            lines.append(f"### {ch['question_text']}")
-            lines.append(f"- Tournament: {ch['tournament']}")
-            lines.append(f"- URL: {url}")
-            if ch.get("close_time"):
-                lines.append(f"- Close time (UTC): {ch['close_time']}")
-            lines.append(f"- Type: {ch['question_type']}")
-            lines.append(f"- Reason: {ch['reason']}")
-            lines.append(f"- Old: {fmt_pred(ch['old_prediction'])}")
-            lines.append(f"- New: {fmt_pred(ch['new_prediction'])}")
-            lines.append("")
-            lines.append("**Readable prediction**")
-            lines.append(ch.get("readable_prediction") or "")
-            lines.append("")
-            if ch.get("summary"):
-                lines.append("**Report summary**")
-                lines.append(str(ch["summary"]))
-                lines.append("")
-            if ch.get("research"):
-                lines.append("**Report research**")
-                lines.append(str(ch["research"]))
-                lines.append("")
-            if ch.get("forecast_rationales"):
-                lines.append("**Report forecast**")
-                lines.append(str(ch["forecast_rationales"]))
-                lines.append("")
+        lines.append(f"- See `failures.json` in the digest artifact for full details.")
+        for failure in failures[:20]:
+            tournament = failure.get("tournament", "(unknown tournament)")
+            error = failure.get("error", "(unknown error)")
+            lines.append(f"- {tournament}: {str(error)[:300]}")
+        if len(failures) > 20:
+            lines.append(f"- ... and {len(failures) - 20} more")
 
     digest_path.write_text("\n".join(lines), encoding="utf-8")
     changes_path.write_text("\n".join(lines), encoding="utf-8")
@@ -520,15 +996,41 @@ async def run_digest(
         json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    if significant_changes:
-        message_lines = [
-            f"Metaculus digest: {len(significant_changes)} significant change(s) ({now_iso[:10]})",
-        ]
+    if significant_changes or failures:
+        if compare_mode == "account":
+            bot_count = len(significant_changes_by_account.get("bot") or [])
+            track_count = len(significant_changes_by_account.get("track") or [])
+            summary = (
+                f"Metaculus digest ({now_iso[:10]}): bot Δ {bot_count}"
+                + (f", tracked Δ {track_count}" if track_token else "")
+            )
+        else:
+            summary = (
+                f"Metaculus digest: {len(significant_changes)} significant change(s) ({now_iso[:10]})"
+            )
+
+        if failures and not significant_changes:
+            summary += f" (failures: {len(failures)})"
+        elif failures:
+            summary += f" (failures: {len(failures)})"
+
+        message_lines = [summary]
         for ch in significant_changes[:10]:
             url = ch.get("page_url") or ch.get("key")
+            prefix = ""
+            if compare_mode == "account":
+                prefix = f"[{ch.get('account')}] "
             message_lines.append(
-                f"- {ch['tournament']}: {ch['question_text']} ({url})"
+                f"- {prefix}{ch['tournament']}: {ch['question_text']} ({url})"
             )
         if len(significant_changes) > 10:
             message_lines.append(f"... and {len(significant_changes) - 10} more")
+
+        if failures and not significant_changes:
+            message_lines.append("")
+            message_lines.append("Failures (first 3):")
+            for failure in failures[:3]:
+                tournament = failure.get("tournament", "(unknown tournament)")
+                error = failure.get("error", "(unknown error)")
+                message_lines.append(f"- {tournament}: {str(error)[:200]}")
         matrix_send_message("\n".join(message_lines))

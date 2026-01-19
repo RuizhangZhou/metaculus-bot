@@ -3,13 +3,14 @@
 #
 # Note: This file is used by `--mode digest` (human-facing monitoring). The bot
 # submission workflow is configured separately to only submit to Spring AIB.
-https://www.metaculus.com/tournament/market-pulse-26q1/
-https://www.metaculus.com/tournament/climate/
-https://www.metaculus.com/tournament/sagan-tournament/
-https://www.metaculus.com/tournament/foresight-ai-pathways/
-https://www.metaculus.com/tournament/POTUS-predictions/
-https://www.metaculus.com/index/us-democracy-threat/
 https://www.metaculus.com/tournament/metaculus-cup-spring-2026/
-https://www.metaculus.com/tournament/ACX2026/
-https://www.metaculus.com/tournament/spring-aib-2026/
-https://www.metaculus.com/tournament/bridgewater/
+# (Enable more tournaments later as needed)
+# https://www.metaculus.com/tournament/market-pulse-26q1/
+# https://www.metaculus.com/tournament/climate/
+# https://www.metaculus.com/tournament/sagan-tournament/
+# https://www.metaculus.com/tournament/foresight-ai-pathways/
+# https://www.metaculus.com/tournament/POTUS-predictions/
+# https://www.metaculus.com/index/us-democracy-threat/
+# https://www.metaculus.com/tournament/ACX2026/
+# https://www.metaculus.com/tournament/spring-aib-2026/
+# https://www.metaculus.com/tournament/bridgewater/
