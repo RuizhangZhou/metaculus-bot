@@ -104,14 +104,14 @@ class SpringTemplateBot2026(ForecastBot):
         ...
         llms={  # choose your model names or GeneralLlm llms here, otherwise defaults will be chosen for you
             "default": GeneralLlm(
-                model="openrouter/openai/gpt-4o", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
+                model="openrouter/openai/gpt-4o-mini-search-preview", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
                 temperature=0.3,
                 timeout=40,
                 allowed_tries=2,
             ),
-            "summarizer": "openai/gpt-4o-mini",
-            "researcher": "asknews/news-summaries",
-            "parser": "openai/gpt-4o-mini",
+            "summarizer": "openrouter/openai/gpt-4o-mini-search-preview",
+            "researcher": "openrouter/openai/gpt-4o-mini-search-preview",
+            "parser": "openrouter/openai/gpt-4o-mini-search-preview",
         },
     )
     ```
@@ -144,6 +144,36 @@ class SpringTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    @classmethod
+    def _llm_config_defaults(cls) -> dict[str, str | GeneralLlm | None]:
+        """
+        Override the upstream defaults to use a single OpenRouter "search-preview"
+        model for the whole bot, even if other API keys (e.g. AskNews) are present.
+
+        Set `BOT_SINGLE_MODEL` to override the model string.
+        """
+
+        single_model = os.getenv("BOT_SINGLE_MODEL", "").strip()
+        if not single_model:
+            if os.getenv("OPENROUTER_API_KEY"):
+                single_model = "openrouter/openai/gpt-4o-mini-search-preview"
+            elif os.getenv("OPENAI_API_KEY"):
+                single_model = "openai/gpt-4o-mini-search-preview"
+            else:
+                # Fallback: a non-search model so the bot can still run in dev.
+                single_model = "gpt-4o-mini"
+
+        default_llm = GeneralLlm(model=single_model, temperature=0.3)
+        deterministic_llm = GeneralLlm(model=single_model, temperature=0.0)
+        researcher_llm = GeneralLlm(model=single_model, temperature=0.0)
+
+        return {
+            "default": default_llm,
+            "summarizer": deterministic_llm,
+            "researcher": researcher_llm,
+            "parser": deterministic_llm,
+        }
 
     ################################# CONCURRENCY ###################################
 
@@ -255,6 +285,10 @@ class SpringTemplateBot2026(ForecastBot):
                 The superforecaster will give you a question they intend to forecast on.
                 To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
                 You do not produce forecasts yourself.
+
+                Also, use web search to find any relevant prediction markets (Polymarket, Kalshi, Manifold, PredictIt, etc.).
+                If you find a relevant market, report the current implied probability (or price) as a percentage and include a direct link.
+                If you cannot find a relevant market, explicitly say so. Do not invent links or probabilities.
 
                 Question:
                 {question.question_text}
@@ -1337,14 +1371,14 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
         # llms={  # choose your model names or GeneralLlm llms here, otherwise defaults will be chosen for you
         #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
+        #         model="openrouter/openai/gpt-4o-mini-search-preview", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
         #         temperature=0.3,
         #         timeout=40,
         #         allowed_tries=2,
         #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
+        #     "summarizer": "openrouter/openai/gpt-4o-mini-search-preview",
+        #     "researcher": "openrouter/openai/gpt-4o-mini-search-preview",
+        #     "parser": "openrouter/openai/gpt-4o-mini-search-preview",
         # },
     )
 
