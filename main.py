@@ -247,7 +247,7 @@ if __name__ == "__main__":
             **llm_max_tokens_kwargs,
         )
 
-    research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 1)
+    research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 3)
     predictions_per_research_report = _env_int(
         "BOT_PREDICTIONS_PER_RESEARCH_REPORT", 5
     )

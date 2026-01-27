@@ -61,6 +61,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    logger.warning(f"Ignoring invalid boolean for {name}: {raw!r}")
+    return default
+
+
 class SpringTemplateBot2026(ForecastBot):
     """
     This is the template bot for Spring 2026 Metaculus AI Tournament.
@@ -104,14 +117,14 @@ class SpringTemplateBot2026(ForecastBot):
         ...
         llms={  # choose your model names or GeneralLlm llms here, otherwise defaults will be chosen for you
             "default": GeneralLlm(
-                model="openrouter/openai/gpt-4o-mini-search-preview", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
+                model="openrouter/openai/gpt-4o-mini", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
                 temperature=0.3,
                 timeout=40,
                 allowed_tries=2,
             ),
-            "summarizer": "openrouter/openai/gpt-4o-mini-search-preview",
+            "summarizer": "openrouter/openai/gpt-4o-mini",
             "researcher": "openrouter/openai/gpt-4o-mini-search-preview",
-            "parser": "openrouter/openai/gpt-4o-mini-search-preview",
+            "parser": "openrouter/openai/gpt-4o-mini",
         },
     )
     ```
@@ -161,6 +174,7 @@ class SpringTemplateBot2026(ForecastBot):
             """
             Resolution criteria guardrails:
             - Treat the Resolution Criteria and Fine Print as the contract; do not "guess" the intended resolution.
+            - Do not do additional web searches while forecasting; rely on the question + the research assistant report.
             - Tie key claims in your reasoning to the criteria (and to dated sources when possible).
             - If the criteria are ambiguous or required facts are unavailable, state the ambiguity and your assumptions.
             """
@@ -169,30 +183,57 @@ class SpringTemplateBot2026(ForecastBot):
     @classmethod
     def _llm_config_defaults(cls) -> dict[str, str | GeneralLlm | None]:
         """
-        Override the upstream defaults to use a single OpenRouter "search-preview"
-        model for the whole bot, even if other API keys (e.g. AskNews) are present.
+        Defaults are cost-optimized for OpenRouter:
+        - Use a cheap *non-search* model for forecasting/parsing (many calls).
+        - Use a *search* model for research only (ideally 1 call per question).
 
-        Set `BOT_SINGLE_MODEL` to override the model string.
+        Env overrides:
+        - BOT_BASE_MODEL: non-search model (default: OpenRouter gpt-4o-mini)
+        - BOT_SEARCH_MODEL: web-search model (default: OpenRouter gpt-4o-mini-search-preview)
+        - BOT_ENABLE_WEB_SEARCH: set to 0/false to disable research
+        - BOT_SINGLE_MODEL: use one model for everything (debug/experiments)
         """
 
         single_model = os.getenv("BOT_SINGLE_MODEL", "").strip()
         if not single_model:
-            if os.getenv("OPENROUTER_API_KEY"):
-                single_model = "openrouter/openai/gpt-4o-mini-search-preview"
-            elif os.getenv("OPENAI_API_KEY"):
-                single_model = "openai/gpt-4o-mini-search-preview"
-            else:
-                # Fallback: a non-search model so the bot can still run in dev.
-                single_model = "gpt-4o-mini"
+            base_model = os.getenv("BOT_BASE_MODEL", "").strip()
+            if not base_model:
+                if os.getenv("OPENROUTER_API_KEY"):
+                    base_model = "openrouter/openai/gpt-4o-mini"
+                elif os.getenv("OPENAI_API_KEY"):
+                    base_model = "openai/gpt-4o-mini"
+                else:
+                    base_model = "gpt-4o-mini"
 
+            search_model = os.getenv("BOT_SEARCH_MODEL", "").strip()
+            if not search_model:
+                if os.getenv("OPENROUTER_API_KEY"):
+                    search_model = "openrouter/openai/gpt-4o-mini-search-preview"
+                elif os.getenv("OPENAI_API_KEY"):
+                    search_model = "openai/gpt-4o-mini-search-preview"
+                else:
+                    search_model = base_model
+
+            enable_web_search = _env_bool("BOT_ENABLE_WEB_SEARCH", True)
+
+            return {
+                "default": GeneralLlm(model=base_model, temperature=0.3),
+                "summarizer": GeneralLlm(model=base_model, temperature=0.0),
+                "parser": GeneralLlm(model=base_model, temperature=0.0),
+                "researcher": (
+                    GeneralLlm(model=search_model, temperature=0.0)
+                    if enable_web_search
+                    else "no_research"
+                ),
+            }
+
+        # Single-model mode (debug/experiments).
         default_llm = GeneralLlm(model=single_model, temperature=0.3)
         deterministic_llm = GeneralLlm(model=single_model, temperature=0.0)
-        researcher_llm = GeneralLlm(model=single_model, temperature=0.0)
-
         return {
             "default": default_llm,
             "summarizer": deterministic_llm,
-            "researcher": researcher_llm,
+            "researcher": deterministic_llm,
             "parser": deterministic_llm,
         }
 
@@ -300,6 +341,35 @@ class SpringTemplateBot2026(ForecastBot):
             research = ""
             researcher = self.get_llm("researcher")
 
+            researcher_model_name = GeneralLlm.to_model_name(researcher)
+            researcher_model_name_lower = researcher_model_name.lower()
+            uses_web_search = (
+                "search-preview" in researcher_model_name_lower
+                or researcher_model_name_lower.startswith("perplexity/")
+                or researcher_model_name_lower.startswith("smart-searcher/")
+            )
+            web_search_instructions = (
+                clean_indents(
+                    """
+                    Web search guidance:
+                    - Prefer NOT to browse if you already have sufficient, high-confidence information from the question + general knowledge.
+                    - If browsing is needed, try to use at most ONE web-search request total for this question.
+                    - Make it a single broad query that covers (1) latest status/key events and (2) any relevant prediction markets.
+
+                    Find any relevant prediction markets (Polymarket, Kalshi, Manifold, PredictIt, etc.).
+                    If you find a relevant market, report the current implied probability (or price) as a percentage and include a direct link.
+                    If you cannot find a relevant market, explicitly say so. Do not invent links or probabilities.
+                    """
+                )
+                if uses_web_search
+                else clean_indents(
+                    """
+                    Do not browse the web. Do not invent sources, links, or market prices.
+                    If you cannot verify a claim from the question text itself, say so and mark it as uncertain.
+                    """
+                )
+            )
+
             prompt = clean_indents(
                 f"""
                 You are an assistant to a superforecaster.
@@ -307,9 +377,7 @@ class SpringTemplateBot2026(ForecastBot):
                 To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
                 You do not produce forecasts yourself.
 
-                Also, use web search to find any relevant prediction markets (Polymarket, Kalshi, Manifold, PredictIt, etc.).
-                If you find a relevant market, report the current implied probability (or price) as a percentage and include a direct link.
-                If you cannot find a relevant market, explicitly say so. Do not invent links or probabilities.
+                {web_search_instructions}
 
                 {self._resolution_criteria_research_guardrails()}
 
@@ -1402,14 +1470,14 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
         # llms={  # choose your model names or GeneralLlm llms here, otherwise defaults will be chosen for you
         #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o-mini-search-preview", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
+        #         model="openrouter/openai/gpt-4o-mini", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)
         #         temperature=0.3,
         #         timeout=40,
         #         allowed_tries=2,
         #     ),
-        #     "summarizer": "openrouter/openai/gpt-4o-mini-search-preview",
+        #     "summarizer": "openrouter/openai/gpt-4o-mini",
         #     "researcher": "openrouter/openai/gpt-4o-mini-search-preview",
-        #     "parser": "openrouter/openai/gpt-4o-mini-search-preview",
+        #     "parser": "openrouter/openai/gpt-4o-mini",
         # },
     )
 
