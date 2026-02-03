@@ -15,6 +15,7 @@ from digest_mode import (
     matrix_send_message,
     run_digest,
 )
+from tournament_update import select_questions_for_tournament_update
 from forecasting_tools import GeneralLlm, MetaculusClient
 
 from template_bot_2026 import SpringTemplateBot2026
@@ -23,7 +24,7 @@ from template_bot_2026 import SpringTemplateBot2026
 def _notify_matrix_on_submit(
     *, run_mode: str, forecast_reports: list[object]
 ) -> None:
-    if run_mode not in {"tournament", "metaculus_cup"}:
+    if run_mode not in {"tournament", "tournament_update", "metaculus_cup"}:
         return
     successful_reports = [
         report
@@ -139,7 +140,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "metaculus_cup", "test_questions", "digest"],
+        choices=["tournament", "tournament_update", "metaculus_cup", "test_questions", "digest"],
         default="tournament",
         help="Specify the run mode (default: tournament)",
     )
@@ -193,13 +194,15 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
-    run_mode: Literal["tournament", "metaculus_cup", "test_questions", "digest"] = (
+    run_mode: Literal[
+        "tournament", "tournament_update", "metaculus_cup", "test_questions", "digest"
+    ] = (
         args.mode
     )
 
     _validate_and_normalize_metaculus_token()
 
-    default_submit = run_mode in {"tournament", "metaculus_cup"}
+    default_submit = run_mode in {"tournament", "tournament_update", "metaculus_cup"}
     if run_mode == "test_questions":
         default_submit = False
     publish_to_metaculus = default_submit if args.submit is None else bool(args.submit)
@@ -317,6 +320,54 @@ if __name__ == "__main__":
                     )
                 )
                 forecast_reports = seasonal_tournament_reports + minibench_reports
+
+        elif run_mode == "tournament_update":
+            template_bot.skip_previously_forecasted_questions = False
+
+            if args.tournaments_file or args.tournament:
+                tournaments, unsupported = load_tournament_identifiers(
+                    args.tournaments_file, args.tournament
+                )
+                for item in unsupported:
+                    logging.getLogger(__name__).warning(
+                        f"Unsupported collection (not a tournament): {item}"
+                    )
+                if not tournaments:
+                    raise SystemExit(
+                        "No valid tournaments configured via --tournaments-file/--tournament."
+                    )
+            else:
+                market_pulse_env = os.getenv("MARKET_PULSE_TOURNAMENT", "").strip()
+                default_raw = market_pulse_env or client.CURRENT_MARKET_PULSE_ID
+                default_id = extract_tournament_identifier(default_raw)
+                if not default_id or default_id.startswith("index:"):
+                    raise SystemExit(
+                        "No tournament specified. Set MARKET_PULSE_TOURNAMENT or pass --tournament."
+                    )
+                tournaments = [default_id]
+
+            for tournament_id in tournaments:
+                questions_to_forecast, counts = select_questions_for_tournament_update(
+                    client=client,
+                    tournament_id=tournament_id,
+                )
+                logging.getLogger(__name__).info(
+                    "Tournament update scan (%s): total_open=%s, queued_unforecasted=%s, queued_cp_changed=%s, skipped_missing_cp=%s",
+                    tournament_id,
+                    counts.get("total_open"),
+                    counts.get("queued_unforecasted"),
+                    counts.get("queued_cp_changed"),
+                    counts.get("skipped_missing_cp"),
+                )
+                if not questions_to_forecast:
+                    continue
+                forecast_reports.extend(
+                    asyncio.run(
+                        template_bot.forecast_questions(
+                            questions_to_forecast, return_exceptions=True
+                        )
+                    )
+                )
 
         elif run_mode == "metaculus_cup":
             template_bot.skip_previously_forecasted_questions = False

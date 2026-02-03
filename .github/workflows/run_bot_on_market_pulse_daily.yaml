@@ -1,0 +1,107 @@
+name: Market Pulse daily refresh (bot submission)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tournament:
+        description: "Tournament slug or URL (default: MARKET_PULSE_TOURNAMENT var or market-pulse-26q1)"
+        required: false
+        default: ""
+        type: string
+      researcher:
+        description: "Research strategy/model (e.g. no_research, smart-searcher/openrouter/openai/gpt-4o-mini)"
+        required: false
+        default: "smart-searcher/openrouter/openai/gpt-4o-mini"
+        type: string
+      default_model:
+        description: "Override default LLM model (Litellm format), e.g. openrouter/openai/gpt-oss-120b:free"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
+      parser_model:
+        description: "Override parser LLM model (Litellm format), e.g. openrouter/openai/gpt-oss-120b:free"
+        required: false
+        default: "openrouter/openai/gpt-oss-120b:free"
+        type: string
+      smart_searcher_num_searches:
+        description: "SmartSearcher: number of searches to run"
+        required: false
+        default: "1"
+        type: string
+      smart_searcher_num_sites_per_search:
+        description: "SmartSearcher: sites per search"
+        required: false
+        default: "5"
+        type: string
+      smart_searcher_use_advanced_filters:
+        description: "SmartSearcher: advanced filters (true/false)"
+        required: false
+        default: "false"
+        type: string
+  schedule:
+    - cron: "0 12 * * *" # daily at 12:00 UTC
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  forecast_job:
+    runs-on: ubuntu-latest
+    environment: "metaculus bot"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Run daily refresh
+        run: |
+          TOURNAMENT="${{ github.event.inputs.tournament }}"
+          RESEARCHER="${{ github.event.inputs.researcher }}"
+          DEFAULT_MODEL="${{ github.event.inputs.default_model }}"
+          PARSER_MODEL="${{ github.event.inputs.parser_model }}"
+          SMART_SEARCHER_NUM_SEARCHES="${{ github.event.inputs.smart_searcher_num_searches }}"
+          SMART_SEARCHER_NUM_SITES_PER_SEARCH="${{ github.event.inputs.smart_searcher_num_sites_per_search }}"
+          SMART_SEARCHER_USE_ADVANCED_FILTERS="${{ github.event.inputs.smart_searcher_use_advanced_filters }}"
+
+          if [ -z "$TOURNAMENT" ]; then TOURNAMENT="${MARKET_PULSE_TOURNAMENT:-market-pulse-26q1}"; fi
+          if [ -z "$RESEARCHER" ]; then RESEARCHER="smart-searcher/openrouter/openai/gpt-4o-mini"; fi
+          if [ -z "$DEFAULT_MODEL" ]; then DEFAULT_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$PARSER_MODEL" ]; then PARSER_MODEL="openrouter/openai/gpt-oss-120b:free"; fi
+          if [ -z "$SMART_SEARCHER_NUM_SEARCHES" ]; then SMART_SEARCHER_NUM_SEARCHES="1"; fi
+          if [ -z "$SMART_SEARCHER_NUM_SITES_PER_SEARCH" ]; then SMART_SEARCHER_NUM_SITES_PER_SEARCH="5"; fi
+          if [ -z "$SMART_SEARCHER_USE_ADVANCED_FILTERS" ]; then SMART_SEARCHER_USE_ADVANCED_FILTERS="false"; fi
+
+          export SMART_SEARCHER_NUM_SEARCHES
+          export SMART_SEARCHER_NUM_SITES_PER_SEARCH
+          export SMART_SEARCHER_USE_ADVANCED_FILTERS
+
+          poetry run python main.py --mode tournament_update --tournament "$TOURNAMENT" --researcher "$RESEARCHER" --default-model "$DEFAULT_MODEL" --parser-model "$PARSER_MODEL" --submit
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
+          ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          MARKET_PULSE_TOURNAMENT: ${{ vars.MARKET_PULSE_TOURNAMENT }}
+          MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+          MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+          MATRIX_NOTIFY_ALWAYS: "false"
+
