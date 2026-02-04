@@ -102,20 +102,31 @@ jobs:
 
             # Calculate active minibench tournaments based on 2026-01-19 baseline
             # Each minibench starts every 2 weeks (Monday) and lasts 30 days
+            # Note: "minibench" (no date) is always the latest one, so we only add
+            # older minibench-YYYY-MM-DD that are still within 30-day window
             BASE_DATE=$(date -d "2026-01-19" +%s)
             TODAY=$(date +%s)
             INTERVAL=$((14 * 86400))  # 14 days in seconds
             DURATION=$((30 * 86400))  # 30 days in seconds
 
+            # Collect all active minibench start dates
+            ACTIVE_DATES=()
             current=$BASE_DATE
             while [ $current -le $TODAY ]; do
               end_date=$((current + DURATION))
               if [ $end_date -ge $TODAY ]; then
-                date_str=$(date -d "@$current" +%Y-%m-%d)
-                TOURNAMENTS+=("minibench-$date_str")
+                ACTIVE_DATES+=($current)
               fi
               current=$((current + INTERVAL))
             done
+
+            # Skip the latest one (it's "minibench"), only add older ones with date suffix
+            if [ ${#ACTIVE_DATES[@]} -gt 1 ]; then
+              for ((i=0; i<${#ACTIVE_DATES[@]}-1; i++)); do
+                date_str=$(date -d "@${ACTIVE_DATES[$i]}" +%Y-%m-%d)
+                TOURNAMENTS+=("minibench-$date_str")
+              done
+            fi
           fi
 
           echo "Tournaments to process: ${TOURNAMENTS[*]}"
