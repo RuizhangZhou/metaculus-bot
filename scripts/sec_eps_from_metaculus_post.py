@@ -235,7 +235,65 @@ class ExtractedEps:
 
 
 def _normalize_ticker(ticker: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", ticker.strip().upper())
+    # Some Metaculus group questions use stylized tickers with confusable unicode
+    # characters (e.g. "ΑΜΖΝ" with Greek letters). Normalize those to ASCII.
+    confusable_map = str.maketrans(
+        {
+            # Greek
+            "Α": "A",
+            "Β": "B",
+            "Ε": "E",
+            "Ζ": "Z",
+            "Η": "H",
+            "Ι": "I",
+            "Κ": "K",
+            "Μ": "M",
+            "Ν": "N",
+            "Ο": "O",
+            "Ρ": "P",
+            "Τ": "T",
+            "Υ": "Y",
+            "Χ": "X",
+            "α": "A",
+            "β": "B",
+            "ε": "E",
+            "ζ": "Z",
+            "η": "H",
+            "ι": "I",
+            "κ": "K",
+            "μ": "M",
+            "ν": "N",
+            "ο": "O",
+            "ρ": "P",
+            "τ": "T",
+            "υ": "Y",
+            "χ": "X",
+            # Cyrillic
+            "А": "A",
+            "В": "B",
+            "Е": "E",
+            "К": "K",
+            "М": "M",
+            "Н": "H",
+            "О": "O",
+            "Р": "P",
+            "С": "C",
+            "Т": "T",
+            "Х": "X",
+            "а": "A",
+            "в": "B",
+            "е": "E",
+            "к": "K",
+            "м": "M",
+            "н": "H",
+            "о": "O",
+            "р": "P",
+            "с": "C",
+            "т": "T",
+            "х": "X",
+        }
+    )
+    return re.sub(r"[^A-Z0-9]", "", ticker.translate(confusable_map).strip().upper())
 
 
 def _ticker_to_cik_int(session: requests.Session, ticker: str) -> int:

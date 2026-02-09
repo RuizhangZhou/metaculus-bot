@@ -220,7 +220,14 @@ if __name__ == "__main__":
 
     llms: dict[str, object] | None = None
     if args.researcher or args.default_model or args.parser_model:
-        llms = {}
+        # Start from the template bot defaults so partial CLI overrides (e.g.
+        # `--researcher ...`) don't accidentally drop required LLM config and
+        # fall back to forecasting-tools' built-in defaults.
+        llms = {
+            k: v
+            for k, v in SpringTemplateBot2026._llm_config_defaults().items()
+            if v is not None
+        }
     if args.researcher and llms is not None:
         llms["researcher"] = args.researcher
 
@@ -237,15 +244,12 @@ if __name__ == "__main__":
             **llm_max_tokens_kwargs,
         )
         llms["default"] = default_llm
-        llms.setdefault(
-            "summarizer",
-            GeneralLlm(
-                model=args.default_model,
-                temperature=0.0,
-                timeout=60,
-                allowed_tries=2,
-                **llm_max_tokens_kwargs,
-            ),
+        llms["summarizer"] = GeneralLlm(
+            model=args.default_model,
+            temperature=0.0,
+            timeout=60,
+            allowed_tries=2,
+            **llm_max_tokens_kwargs,
         )
     if args.parser_model and llms is not None:
         llms["parser"] = GeneralLlm(

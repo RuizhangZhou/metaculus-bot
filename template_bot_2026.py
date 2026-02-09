@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import uuid4
 import dotenv
@@ -607,7 +607,14 @@ class SpringTemplateBot2026(ForecastBot):
         timeout = base_llm.litellm_kwargs.get("timeout")
 
         clone_kwargs: dict = {}
-        for key in ("base_url", "api_key", "api_version", "extra_headers", "extra_body"):
+        for key in (
+            "base_url",
+            "api_key",
+            "api_version",
+            "extra_headers",
+            "extra_body",
+            "custom_llm_provider",
+        ):
             if base_llm.litellm_kwargs.get(key) is not None:
                 clone_kwargs[key] = base_llm.litellm_kwargs[key]
 
@@ -825,6 +832,9 @@ class SpringTemplateBot2026(ForecastBot):
                 base_llm_kwargs = {
                     "base_url": kiconnect_api_url,
                     "api_key": kiconnect_api_key,
+                    # Ensure LiteLLM treats unknown model names as OpenAI-compatible
+                    # (important for KICONNECT_MODEL_FALLBACKS like gpt-oss-*).
+                    "custom_llm_provider": "openai",
                 }
 
             if not base_model:
@@ -1022,9 +1032,68 @@ class SpringTemplateBot2026(ForecastBot):
         Group subquestions typically store the ticker in `group_question_option`.
         """
 
+        confusable_map = str.maketrans(
+            {
+                # Greek (common in stylized tickers, e.g. "ΑΜΖΝ")
+                "Α": "A",
+                "Β": "B",
+                "Ε": "E",
+                "Ζ": "Z",
+                "Η": "H",
+                "Ι": "I",
+                "Κ": "K",
+                "Μ": "M",
+                "Ν": "N",
+                "Ο": "O",
+                "Ρ": "P",
+                "Τ": "T",
+                "Υ": "Y",
+                "Χ": "X",
+                "α": "A",
+                "β": "B",
+                "ε": "E",
+                "ζ": "Z",
+                "η": "H",
+                "ι": "I",
+                "κ": "K",
+                "μ": "M",
+                "ν": "N",
+                "ο": "O",
+                "ρ": "P",
+                "τ": "T",
+                "υ": "Y",
+                "χ": "X",
+                # Cyrillic (anti-spoofing hardening)
+                "А": "A",
+                "В": "B",
+                "Е": "E",
+                "К": "K",
+                "М": "M",
+                "Н": "H",
+                "О": "O",
+                "Р": "P",
+                "С": "C",
+                "Т": "T",
+                "Х": "X",
+                "а": "A",
+                "в": "B",
+                "е": "E",
+                "к": "K",
+                "м": "M",
+                "н": "H",
+                "о": "O",
+                "р": "P",
+                "с": "C",
+                "т": "T",
+                "х": "X",
+            }
+        )
+
         group_option = getattr(question, "group_question_option", None)
         if isinstance(group_option, str):
-            candidate = group_option.strip().upper()
+            candidate = re.sub(
+                r"[^A-Z0-9.]", "", group_option.translate(confusable_map).strip().upper()
+            )
             if 1 <= len(candidate) <= 10 and candidate.replace(".", "").isalnum():
                 return candidate
 
@@ -1045,11 +1114,456 @@ class SpringTemplateBot2026(ForecastBot):
         ).lower()
         if "earnings per share" in haystack:
             return True
-        if re.search(r"\\bgaap\\b", haystack) and re.search(r"\\beps\\b", haystack):
+        if re.search(r"\bgaap\b", haystack) and re.search(r"\beps\b", haystack):
             return True
-        if re.search(r"\\beps\\b", haystack) and "diluted" in haystack:
+        if re.search(r"\beps\b", haystack) and "diluted" in haystack:
             return True
         return False
+
+    @staticmethod
+    def _looks_like_revenue_question(question: MetaculusQuestion) -> bool:
+        haystack = "\n".join(
+            [
+                (getattr(question, "question_text", None) or ""),
+                (getattr(question, "resolution_criteria", None) or ""),
+                (getattr(question, "background_info", None) or ""),
+            ]
+        ).lower()
+        if re.search(r"\brevenues?\b", haystack):
+            return True
+        if "net sales" in haystack:
+            return True
+        return False
+
+    _SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
+    _SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
+    _SEC_TICKER_MAP_TTL_S = 7 * 86400
+    _SEC_COMPANYFACTS_TTL_S = 6 * 3600
+
+    _sec_ticker_to_cik_cache: dict[str, int] | None = None
+    _sec_ticker_to_cik_cache_fetched_at: float | None = None
+    _sec_companyfacts_cache: dict[int, tuple[float, dict]] = {}
+
+    @staticmethod
+    def _sec_user_agent() -> str:
+        ua = os.getenv("SEC_USER_AGENT", "").strip()
+        if ua and ua != "YOUR_SEC_USER_AGENT":
+            return ua
+        return (
+            "metac-bot-template/0.1 (SEC_USER_AGENT not set; "
+            "please set SEC_USER_AGENT='your app name (email)')"
+        )
+
+    @classmethod
+    def _sec_get_json(
+        cls, url: str, *, timeout_s: int = 30, allowed_tries: int = 2
+    ) -> dict:
+        headers = {
+            "User-Agent": cls._sec_user_agent(),
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+        }
+        allowed_tries = max(1, int(allowed_tries))
+        last_error: BaseException | None = None
+        for attempt in range(1, allowed_tries + 1):
+            try:
+                resp = requests.get(
+                    url, headers=headers, timeout=(min(5, timeout_s), timeout_s)
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    raise ValueError("Unexpected SEC response type")
+                return data
+            except BaseException as e:
+                last_error = e
+                if attempt >= allowed_tries:
+                    raise
+                time.sleep(0.5 * attempt)
+        raise last_error if last_error is not None else RuntimeError(
+            "SEC request failed without an exception"
+        )
+
+    @classmethod
+    def _sec_ticker_to_cik_int(cls, ticker: str) -> int | None:
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return None
+
+        now = time.time()
+        if (
+            cls._sec_ticker_to_cik_cache is not None
+            and cls._sec_ticker_to_cik_cache_fetched_at is not None
+            and now - cls._sec_ticker_to_cik_cache_fetched_at < cls._SEC_TICKER_MAP_TTL_S
+        ):
+            return cls._sec_ticker_to_cik_cache.get(ticker)
+
+        data = cls._sec_get_json(cls._SEC_TICKER_MAP_URL, timeout_s=30, allowed_tries=3)
+        mapping: dict[str, int] = {}
+        for entry in data.values():
+            if not isinstance(entry, dict):
+                continue
+            t = str(entry.get("ticker") or "").strip().upper()
+            cik_raw = entry.get("cik_str")
+            if not t or cik_raw is None:
+                continue
+            try:
+                cik_int = int(cik_raw)
+            except Exception:
+                continue
+            mapping[t] = cik_int
+
+        cls._sec_ticker_to_cik_cache = mapping
+        cls._sec_ticker_to_cik_cache_fetched_at = now
+        return mapping.get(ticker)
+
+    @classmethod
+    def _sec_get_companyfacts(cls, cik_int: int) -> dict | None:
+        cik_int = int(cik_int)
+        now = time.time()
+        cached = cls._sec_companyfacts_cache.get(cik_int)
+        if cached is not None:
+            fetched_at, payload = cached
+            if now - float(fetched_at) < cls._SEC_COMPANYFACTS_TTL_S:
+                return payload
+
+        cik10 = f"{cik_int:010d}"
+        url = cls._SEC_COMPANYFACTS_URL.format(cik10=cik10)
+        try:
+            payload = cls._sec_get_json(url, timeout_s=30, allowed_tries=2)
+        except Exception:
+            return None
+
+        cls._sec_companyfacts_cache[cik_int] = (now, payload)
+        return payload
+
+    @staticmethod
+    def _format_plain_number(x: float, *, max_decimals: int = 3) -> str:
+        x = float(x)
+        if abs(x - round(x)) < 1e-9:
+            return str(int(round(x)))
+        s = f"{x:.{max_decimals}f}"
+        return s.rstrip("0").rstrip(".")
+
+    @classmethod
+    def _sec_quarterly_revenue_usd_billions(
+        cls, *, ticker: str
+    ) -> tuple[str | None, list[dict]]:
+        """
+        Returns (company_name, rows) where rows are recent quarterly revenues in USD billions.
+        Best-effort: prefers us-gaap:Revenues, falls back to other common revenue facts.
+        """
+        cik_int = cls._sec_ticker_to_cik_int(ticker)
+        if cik_int is None:
+            return None, []
+
+        facts_json = cls._sec_get_companyfacts(cik_int)
+        if not isinstance(facts_json, dict):
+            return None, []
+
+        company_name = str(facts_json.get("entityName") or "").strip() or None
+        us_gaap = (
+            (facts_json.get("facts") or {}).get("us-gaap")
+            if isinstance(facts_json.get("facts"), dict)
+            else None
+        )
+        if not isinstance(us_gaap, dict):
+            return company_name, []
+
+        candidates = (
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "SalesRevenueNet",
+        )
+        candidate_rows: list[tuple[str, str, list[dict]]] = []
+        for key in candidates:
+            fact = us_gaap.get(key)
+            if not isinstance(fact, dict):
+                continue
+            units = fact.get("units")
+            if not isinstance(units, dict):
+                continue
+            usd_rows = units.get("USD")
+            if not isinstance(usd_rows, list) or not usd_rows:
+                continue
+            ends = [
+                row.get("end")
+                for row in usd_rows
+                if isinstance(row, dict) and isinstance(row.get("end"), str)
+            ]
+            max_end = max(ends) if ends else ""
+            candidate_rows.append((max_end, key, [r for r in usd_rows if isinstance(r, dict)]))
+
+        if not candidate_rows:
+            return company_name, []
+
+        candidate_rows.sort(key=lambda x: x[0], reverse=True)
+        _, chosen, usd_rows = candidate_rows[0]
+
+        def parse_date(s: str):
+            return datetime.fromisoformat(s).date()
+
+        quarterly: list[dict] = []
+        ytd_q3_by_end: dict[str, dict] = {}
+        fy_by_end: dict[str, dict] = {}
+
+        for row in usd_rows:
+            if not isinstance(row, dict):
+                continue
+            start = row.get("start")
+            end = row.get("end")
+            val = row.get("val")
+            if not isinstance(start, str) or not isinstance(end, str) or val is None:
+                continue
+            try:
+                start_d = parse_date(start)
+                end_d = parse_date(end)
+            except Exception:
+                continue
+            if end_d <= start_d:
+                continue
+            dur_days = (end_d - start_d).days
+            filed = str(row.get("filed") or "")
+            fp = str(row.get("fp") or "").upper()
+            fy_raw = row.get("fy")
+            try:
+                fy = int(fy_raw) if fy_raw is not None else None
+            except Exception:
+                fy = None
+
+            if 70 <= dur_days <= 110:
+                try:
+                    usd = float(val)
+                except Exception:
+                    continue
+                quarterly.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "usd": usd,
+                        "usd_b": usd / 1e9,
+                        "form": str(row.get("form") or ""),
+                        "fp": fp,
+                        "fy": fy,
+                        "filed": filed,
+                        "frame": str(row.get("frame") or ""),
+                        "computed": False,
+                        "fact": chosen,
+                    }
+                )
+                continue
+
+            if 330 <= dur_days <= 400 and fp == "FY":
+                best = fy_by_end.get(end)
+                if best is None or filed > str(best.get("filed") or ""):
+                    fy_by_end[end] = {
+                        "start": start,
+                        "end": end,
+                        "usd": float(val),
+                        "filed": filed,
+                        "fact": chosen,
+                    }
+                continue
+
+            if 240 <= dur_days <= 320 and fp == "Q3":
+                best = ytd_q3_by_end.get(end)
+                if best is None or filed > str(best.get("filed") or ""):
+                    ytd_q3_by_end[end] = {
+                        "start": start,
+                        "end": end,
+                        "usd": float(val),
+                        "filed": filed,
+                        "fact": chosen,
+                    }
+                continue
+
+        best_by_period: dict[tuple[str, str], dict] = {}
+        for row in quarterly:
+            key = (row["start"], row["end"])
+            best = best_by_period.get(key)
+            if best is None or str(row.get("filed") or "") > str(best.get("filed") or ""):
+                best_by_period[key] = row
+        quarterly = list(best_by_period.values())
+
+        # Add computed Q4 quarters when we only have FY + YTD(Q3).
+        existing_quarter_ends = {str(r.get("end")) for r in quarterly}
+        ytd_rows = list(ytd_q3_by_end.values())
+        for fy_row in fy_by_end.values():
+            fy_end_raw = str(fy_row.get("end") or "")
+            if not fy_end_raw or fy_end_raw in existing_quarter_ends:
+                continue
+            try:
+                fy_end = parse_date(fy_end_raw)
+            except Exception:
+                continue
+
+            best_ytd = None
+            best_gap = None
+            for ytd_row in ytd_rows:
+                ytd_end_raw = str(ytd_row.get("end") or "")
+                if not ytd_end_raw:
+                    continue
+                try:
+                    ytd_end = parse_date(ytd_end_raw)
+                except Exception:
+                    continue
+                if ytd_end >= fy_end:
+                    continue
+                gap = (fy_end - ytd_end).days
+                if gap < 60 or gap > 140:
+                    continue
+                if best_gap is None or gap < best_gap:
+                    best_gap = gap
+                    best_ytd = ytd_row
+
+            if best_ytd is None:
+                continue
+
+            try:
+                q4_usd = float(fy_row["usd"]) - float(best_ytd["usd"])
+            except Exception:
+                continue
+            if q4_usd <= 0:
+                continue
+
+            try:
+                start_d = parse_date(str(best_ytd["end"])) + timedelta(days=1)
+            except Exception:
+                continue
+            if fy_end <= start_d:
+                continue
+            dur_days = (fy_end - start_d).days
+            if not (70 <= dur_days <= 110):
+                continue
+
+            quarterly.append(
+                {
+                    "start": start_d.isoformat(),
+                    "end": fy_end_raw,
+                    "usd": q4_usd,
+                    "usd_b": q4_usd / 1e9,
+                    "form": "10-K",
+                    "fp": "Q4*",
+                    "fy": None,
+                    "filed": str(fy_row.get("filed") or ""),
+                    "frame": "",
+                    "computed": True,
+                    "fact": chosen,
+                    "note": "Computed Q4 = FY - YTD(Q3)",
+                }
+            )
+
+        quarterly.sort(key=lambda r: str(r.get("end") or ""))
+        return company_name, quarterly
+
+    async def _free_revenue_research_from_sec(
+        self, question: MetaculusQuestion, *, include_error: bool = False
+    ) -> str:
+        ticker = self._infer_ticker_symbol(question)
+        if not ticker:
+            return ""
+
+        def fetch() -> tuple[str | None, list[dict]]:
+            return self._sec_quarterly_revenue_usd_billions(ticker=ticker)
+
+        try:
+            company_name, rows = await asyncio.to_thread(fetch)
+        except Exception as e:
+            msg = f"Free SEC revenue research failed for {ticker}: {e.__class__.__name__}: {e}"
+            if include_error:
+                return msg
+            logger.warning(msg)
+            return ""
+
+        if not rows:
+            return ""
+
+        unit = str(getattr(question, "unit_of_measure", "") or "").strip()
+
+        # Metaculus community anchor (if available).
+        cp_block = ""
+        try:
+            community_cdf = self._get_community_cdf_percentiles(question)  # type: ignore[arg-type]
+            if community_cdf:
+                p10 = self._value_at_percentile(community_cdf, 0.1)
+                p50 = self._value_at_percentile(community_cdf, 0.5)
+                p90 = self._value_at_percentile(community_cdf, 0.9)
+                if p10 is not None and p50 is not None and p90 is not None:
+                    unit_lower = unit.lower()
+
+                    def fmt_cp(v: float) -> str:
+                        if not unit:
+                            return self._format_plain_number(v)
+                        # If the Metaculus unit is raw dollars, also show an approximate $B for readability.
+                        if ("$" in unit_lower or "usd" in unit_lower) and not re.search(
+                            r"\b[tkmb]\b", unit_lower
+                        ):
+                            v_round = self._format_plain_number(v, max_decimals=0)
+                            v_b = self._format_plain_number(v / 1e9, max_decimals=3)
+                            return f"{v_round} {unit} (~${v_b}B)"
+                        return f"{self._format_plain_number(v)} {unit}"
+
+                    cp_block = (
+                        "Metaculus community aggregate (approx): "
+                        f"p10={fmt_cp(float(p10))}, "
+                        f"p50={fmt_cp(float(p50))}, "
+                        f"p90={fmt_cp(float(p90))}"
+                    ).strip()
+        except Exception:
+            cp_block = ""
+
+        # Recent SEC quarters (limit for prompt size).
+        last_rows = rows[-8:]
+        q_lines: list[str] = []
+        for r in last_rows:
+            end = str(r.get("end") or "")
+            usd_b = r.get("usd_b")
+            if not end or usd_b is None:
+                continue
+            suffix = " (computed)" if r.get("computed") else ""
+            q_lines.append(f"- {end}: ${self._format_plain_number(float(usd_b))}B{suffix}")
+
+        # Simple growth stats (best-effort).
+        growth_line = ""
+        try:
+            if len(rows) >= 2:
+                last = float(rows[-1]["usd_b"])
+                prev = float(rows[-2]["usd_b"])
+                if prev > 0:
+                    qoq = (last / prev) - 1.0
+                    growth_line = f"- QoQ growth (last vs prev): {qoq:+.1%}"
+            if len(rows) >= 5:
+                last = float(rows[-1]["usd_b"])
+                prev_year = float(rows[-5]["usd_b"])
+                if prev_year > 0:
+                    yoy = (last / prev_year) - 1.0
+                    growth_line = (
+                        (growth_line + "; " if growth_line else "- ")
+                        + f"YoY growth (last vs 4Q ago): {yoy:+.1%}"
+                    )
+        except Exception:
+            growth_line = growth_line or ""
+
+        cik_int = self._sec_ticker_to_cik_int(ticker)
+        cik10 = f"{cik_int:010d}" if cik_int is not None else ""
+        companyfacts_url = (
+            self._SEC_COMPANYFACTS_URL.format(cik10=cik10) if cik10 else None
+        )
+
+        lines: list[str] = []
+        header_name = f" ({company_name})" if company_name else ""
+        lines.append(f"Free data sources (SEC EDGAR XBRL) for {ticker}{header_name}:")
+        if cp_block:
+            lines.append(f"- {cp_block}")
+        lines.append("- Recent quarterly revenue (USD, billions):")
+        lines.extend(q_lines)
+        if growth_line:
+            lines.append(growth_line)
+        if companyfacts_url:
+            lines.append("Sources:")
+            lines.append(f"- {companyfacts_url}")
+            lines.append(f"- {self._SEC_TICKER_MAP_URL}")
+        return "\n".join(lines).strip()
 
     @staticmethod
     def _nasdaq_user_agent() -> str:
@@ -1229,6 +1743,12 @@ class SpringTemplateBot2026(ForecastBot):
             return await self._free_eps_research_from_nasdaq(
                 ticker, include_error=True
             )
+        if strategy in {"free/sec-revenue", "free/revenue", "free/revenue-consensus"}:
+            if not self._looks_like_revenue_question(question):
+                return ""
+            return await self._free_revenue_research_from_sec(
+                question, include_error=True
+            )
         return f"Unknown free research strategy: {strategy!r}"
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -1261,6 +1781,16 @@ class SpringTemplateBot2026(ForecastBot):
                             f"Found Research for URL {question.page_url} (free Nasdaq prefetch {ticker}):\n{research}"
                         )
                         return research
+
+            if _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True) and self._looks_like_revenue_question(
+                question
+            ):
+                research = await self._free_revenue_research_from_sec(question)
+                if research:
+                    logger.info(
+                        f"Found Research for URL {question.page_url} (free SEC revenue prefetch):\n{research}"
+                    )
+                    return research
 
             researcher_model_name = GeneralLlm.to_model_name(researcher)
             researcher_model_name_lower = researcher_model_name.lower()

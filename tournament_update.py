@@ -169,6 +169,35 @@ def _extract_cp_from_aggregation_item(
             upper_bounds = _extract_float_list(
                 aggregation_item.get("interval_upper_bounds")
             )
+
+            # Metaculus often stores `centers` / interval bounds for numeric/date/discrete
+            # aggregations normalized to [0, 1] relative to the question scaling range.
+            # Convert to the actual value space when possible so comparisons don't
+            # spuriously detect huge CP shifts.
+            scaling = question_json.get("scaling")
+            range_min = range_max = None
+            if isinstance(scaling, dict):
+                range_min = scaling.get("range_min")
+                range_max = scaling.get("range_max")
+            if isinstance(range_min, (int, float)) and isinstance(range_max, (int, float)):
+                lo = float(range_min)
+                hi = float(range_max)
+                span = hi - lo
+
+                def unscale_01(x: float) -> float:
+                    return lo + span * x
+
+                if 0.0 <= center <= 1.0:
+                    center = unscale_01(center)
+                if lower_bounds and len(lower_bounds) == 1:
+                    lb0 = float(lower_bounds[0])
+                    if 0.0 <= lb0 <= 1.0:
+                        lower_bounds = [unscale_01(lb0)]
+                if upper_bounds and len(upper_bounds) == 1:
+                    ub0 = float(upper_bounds[0])
+                    if 0.0 <= ub0 <= 1.0:
+                        upper_bounds = [unscale_01(ub0)]
+
             declared: list[dict[str, float]] = [{"percentile": 0.5, "value": center}]
             if (
                 lower_bounds
@@ -423,12 +452,17 @@ def select_questions_for_tournament_update(
         "queued_unforecasted": 0,
         "queued_cp_changed": 0,
         "queued_diverged_from_cp": 0,
+        "queued_forced_all": 0,
         "skipped_no_last_forecast_time": 0,
         "skipped_missing_cp": 0,
         "skipped_missing_my_forecast": 0,
         "skipped_other": 0,
     }
     selected: list[MetaculusQuestion] = []
+
+    if _env_bool("BOT_TOURNAMENT_UPDATE_FORCE_ALL_OPEN", False):
+        counts["queued_forced_all"] = len(questions)
+        return questions, counts
 
     for question in questions:
         already_forecasted = bool(getattr(question, "already_forecasted", False))
@@ -500,6 +534,16 @@ def select_questions_for_tournament_update(
 
         if not _env_bool("BOT_ENABLE_UPDATE_ON_CP_DIVERGENCE", True):
             continue
+
+        min_hours = _env_float(
+            "BOT_UPDATE_ON_CP_DIVERGENCE_MIN_HOURS_SINCE_LAST_FORECAST", 12.0
+        )
+        if min_hours > 0:
+            age_hours = (
+                datetime.now(timezone.utc) - _ensure_timezone(last_forecast_time)
+            ).total_seconds() / 3600.0
+            if age_hours < min_hours:
+                continue
 
         my_pred = _extract_account_prediction_from_question_json(
             question_json=question_json,
