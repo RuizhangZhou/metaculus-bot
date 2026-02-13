@@ -55,6 +55,13 @@ If you want the bot to *analyze questions for you* without auto-submitting forec
   - `.state/digest_state.json` (cached state used for comparisons)
 - GitHub Actions: enable `.github/workflows/daily_digest.yaml` and set the same API key secrets as the normal bot. Optionally set Matrix secrets (`MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN`, `MATRIX_ROOM_ID`) to get a notification when significant changes are detected.
 
+## Retrospective (resolved questions you forecasted)
+If you want a simple postmortem on how the bot performed on already-resolved questions, use `--mode retrospective`.
+
+- Run locally (defaults to `MARKET_PULSE_TOURNAMENT`): `poetry run python main.py --mode retrospective`
+- Or specify tournaments: `poetry run python main.py --mode retrospective --tournament market-pulse-26q1`
+- Output: `reports/retrospective/<tournament>_YYYY-MM-DD.md`
+
 ## Research providers (AskNews / others)
 - AskNews research is optional. If your AskNews plan does not allow API access, runs may fail unless you disable it.
 - Disable research (cheapest/minimal): `poetry run python main.py --mode tournament --tournament climate --no-submit --researcher no_research`

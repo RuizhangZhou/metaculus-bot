@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -19,6 +20,7 @@ from tournament_update import select_questions_for_tournament_update
 from forecasting_tools import GeneralLlm, MetaculusClient
 
 from template_bot_2026 import SpringTemplateBot2026
+from retrospective_mode import run_retrospective
 
 
 def _notify_matrix_on_submit(
@@ -135,6 +137,11 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     litellm_logger = logging.getLogger("LiteLLM")
     litellm_logger.setLevel(logging.WARNING)
@@ -146,7 +153,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "tournament_update", "metaculus_cup", "test_questions", "digest"],
+        choices=[
+            "tournament",
+            "tournament_update",
+            "metaculus_cup",
+            "test_questions",
+            "digest",
+            "retrospective",
+        ],
         default="tournament",
         help="Specify the run mode (default: tournament)",
     )
@@ -201,7 +215,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     run_mode: Literal[
-        "tournament", "tournament_update", "metaculus_cup", "test_questions", "digest"
+        "tournament",
+        "tournament_update",
+        "metaculus_cup",
+        "test_questions",
+        "digest",
+        "retrospective",
     ] = (
         args.mode
     )
@@ -217,6 +236,50 @@ if __name__ == "__main__":
             "--submit ignored in digest mode (no submission)."
         )
         publish_to_metaculus = False
+    if run_mode == "retrospective" and publish_to_metaculus:
+        logging.getLogger(__name__).warning(
+            "--submit ignored in retrospective mode (no submission)."
+        )
+        publish_to_metaculus = False
+
+    if run_mode == "retrospective":
+        client = MetaculusClient()
+        if args.tournaments_file or args.tournament:
+            tournaments, unsupported = load_tournament_identifiers(
+                args.tournaments_file, args.tournament
+            )
+            for item in unsupported:
+                logging.getLogger(__name__).warning(
+                    f"Unsupported collection (not a tournament): {item}"
+                )
+            if not tournaments:
+                raise SystemExit(
+                    "No valid tournaments configured via --tournaments-file/--tournament."
+                )
+        else:
+            market_pulse_env = os.getenv("MARKET_PULSE_TOURNAMENT", "").strip()
+            default_raw = market_pulse_env or client.CURRENT_MARKET_PULSE_ID
+            default_id = extract_tournament_identifier(default_raw)
+            if not default_id or default_id.startswith("index:"):
+                raise SystemExit(
+                    "No tournament specified. Set MARKET_PULSE_TOURNAMENT or pass --tournament."
+                )
+            tournaments = [default_id]
+
+        out_dir = Path("reports") / "retrospective"
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for tournament_id in tournaments:
+            safe_id = tournament_id.replace("/", "_").replace(":", "_")
+            out_path = out_dir / f"{safe_id}_{stamp}.md"
+            markdown = asyncio.run(
+                run_retrospective(
+                    client=client,
+                    tournament_id=tournament_id,
+                    out_path=out_path,
+                )
+            )
+            print(markdown)
+        raise SystemExit(0)
 
     llms: dict[str, object] | None = None
     if args.researcher or args.default_model or args.parser_model:
