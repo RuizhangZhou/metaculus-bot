@@ -67,6 +67,7 @@ To review newly-resolved questions on a schedule (e.g. weekend), use `--mode wee
 
 - Run locally: `poetry run python main.py --mode weekly_retrospective`
 - Optional: set `BOT_WEEKLY_RETRO_DAYS_LOOKBACK=7` (or another window)
+- Optional: set `BOT_WEEKLY_RETRO_FORCE_PAGINATION=0` to only fetch the first page (fewer API calls, but may miss some items)
 - Output: `reports/retrospective_weekly/weekly_YYYY-MM-DD.md`
 
 ## Research providers (AskNews / others)

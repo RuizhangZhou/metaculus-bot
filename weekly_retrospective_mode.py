@@ -202,6 +202,7 @@ async def run_weekly_retrospective(
     author_id = client.get_current_user_id()
     if not author_id:
         raise RuntimeError("Failed to determine Metaculus user id (author_id).")
+    forecaster_id = int(author_id)
 
     timeout_seconds = _env_int(
         "BOT_RETROSPECTIVE_HTTP_TIMEOUT_SECONDS", _DEFAULT_HTTP_TIMEOUT_SECONDS
@@ -262,16 +263,20 @@ async def run_weekly_retrospective(
             api_filter = ApiFilter(
                 allowed_tournaments=[tournament_id],
                 allowed_statuses=["resolved"],
-                is_previously_forecasted_by_user=True,
                 group_question_mode="unpack_subquestions",
                 order_by="-actual_resolve_time",
+                # Avoid repeated /api/users/me calls inside forecasting-tools by
+                # passing the `forecaster_id` directly.
+                other_url_parameters={"forecaster_id": forecaster_id},
             )
 
-            # By default, avoid pagination (rate-limit friendly) and rely on ordering
-            # to surface recently resolved items.
-            num_questions = None
-            if _env_int("BOT_WEEKLY_RETRO_FORCE_PAGINATION", 0) > 0:
-                num_questions = max_per_tournament
+            # Paginate by default to avoid missing items when >1 page resolved in the
+            # window. You can set BOT_WEEKLY_RETRO_FORCE_PAGINATION=0 to only fetch
+            # the first page (rate-limit friendly, but may miss some resolved items).
+            paginate = True
+            if os.getenv("BOT_WEEKLY_RETRO_FORCE_PAGINATION") is not None:
+                paginate = _env_int("BOT_WEEKLY_RETRO_FORCE_PAGINATION", 1) > 0
+            num_questions = max_per_tournament if paginate else None
 
             questions = await client.get_questions_matching_filter(
                 api_filter,
@@ -285,6 +290,15 @@ async def run_weekly_retrospective(
             for question in questions:
                 if not bool(getattr(question, "already_forecasted", False)):
                     continue
+
+                # Fast prefilter to avoid api2 calls for older items.
+                resolved_guess = getattr(question, "actual_resolution_time", None)
+                if isinstance(resolved_guess, datetime):
+                    resolved_guess_utc = resolved_guess.astimezone(timezone.utc)
+                    if resolved_guess_utc < window_start:
+                        break
+                    if resolved_guess_utc > window_end:
+                        continue
 
                 question_id = getattr(question, "id_of_question", None)
                 post_id = getattr(question, "id_of_post", None)
