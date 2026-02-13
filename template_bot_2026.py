@@ -19,8 +19,17 @@ from uuid import uuid4
 import dotenv
 from typing import Literal
 from typing import TypeVar
+from typing import Sequence
 
 import requests
+from pydantic import BaseModel
+
+from local_web_crawl import (
+    LocalCrawlLimits,
+    PlaywrightWebPageParser,
+    crawl_urls,
+    extract_http_urls,
+)
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -51,6 +60,42 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+_NOTEPAD_LOCAL_CRAWL_TASK_KEY = "local_crawl_context_task"
+_NOTEPAD_TOOL_ROUTER_PLAN_KEY = "tool_router_plan"
+
+
+class ToolRouterPlan(BaseModel):
+    use_web_search: bool
+    fetch_sec_filings: bool
+    fetch_sec_revenue: bool
+    fetch_nasdaq_eps: bool
+    notes: str | None = None
+
+
+_RESEARCH_FORECAST_LINE_RE = re.compile(
+    r"^\s*Probability\s*:\s*\d{1,3}(?:\.\d+)?\s*%\s*$", re.IGNORECASE
+)
+
+_FORECAST_PROBABILITY_PERCENT_RE = re.compile(
+    r"Probability\s*:\s*(\d{1,3}(?:\.\d+)?)\s*%", re.IGNORECASE
+)
+
+
+def _extract_probability_percent(text: str) -> float | None:
+    if not text:
+        return None
+    matches = list(_FORECAST_PROBABILITY_PERCENT_RE.finditer(text))
+    if not matches:
+        return None
+    last = matches[-1]
+    raw = last.group(1)
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value < 0 or value > 100:
+        return None
+    return value
 
 
 def _env_int(name: str, default: int) -> int:
@@ -219,6 +264,306 @@ class SpringTemplateBot2026(ForecastBot):
         re.IGNORECASE,
     )
 
+    _local_crawl_parser: PlaywrightWebPageParser | None = None
+    _local_crawl_limits: LocalCrawlLimits | None = None
+
+    def _local_crawl_enabled(self) -> bool:
+        return _env_bool("BOT_ENABLE_LOCAL_QUESTION_CRAWL", False)
+
+    def _build_local_crawl_limits_from_env(self) -> LocalCrawlLimits:
+        blocked_raw = os.getenv(
+            "BOT_LOCAL_CRAWL_BLOCKED_RESOURCE_TYPES", "image,font,media"
+        )
+        blocked = frozenset(
+            {
+                part.strip().lower()
+                for part in blocked_raw.split(",")
+                if part.strip()
+            }
+        )
+        return LocalCrawlLimits(
+            max_urls=_env_int("BOT_LOCAL_CRAWL_MAX_URLS", 8),
+            max_concurrency=_env_int("BOT_LOCAL_CRAWL_MAX_CONCURRENCY", 2),
+            navigation_timeout_seconds=_env_int(
+                "BOT_LOCAL_CRAWL_NAV_TIMEOUT_SECONDS", 30
+            ),
+            network_idle_timeout_seconds=_env_int(
+                "BOT_LOCAL_CRAWL_NETWORK_IDLE_TIMEOUT_SECONDS", 5
+            ),
+            total_char_budget=_env_int("BOT_LOCAL_CRAWL_TOTAL_CHAR_BUDGET", 20_000),
+            per_url_char_budget=_env_int(
+                "BOT_LOCAL_CRAWL_PER_URL_CHAR_BUDGET", 4_000
+            ),
+            truncation_marker=os.getenv(
+                "BOT_LOCAL_CRAWL_TRUNCATION_MARKER", "\n\n[TRUNCATED]"
+            ),
+            blocked_resource_types=blocked or frozenset(),
+        )
+
+    async def forecast_questions(
+        self,
+        questions: Sequence[MetaculusQuestion],
+        return_exceptions: bool = False,
+    ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
+        if not self._local_crawl_enabled():
+            return await super().forecast_questions(questions, return_exceptions)
+
+        limits = self._build_local_crawl_limits_from_env()
+        user_agent = os.getenv("BOT_LOCAL_CRAWL_USER_AGENT", "").strip() or None
+
+        self._local_crawl_limits = limits
+        self._local_crawl_parser = PlaywrightWebPageParser(
+            limits=limits,
+            user_agent=user_agent,
+        )
+        try:
+            return await super().forecast_questions(questions, return_exceptions)
+        finally:
+            try:
+                await self._local_crawl_parser.close()
+            finally:
+                self._local_crawl_parser = None
+                self._local_crawl_limits = None
+
+    async def _get_local_crawl_context(self, question: MetaculusQuestion) -> str:
+        if not self._local_crawl_enabled():
+            return ""
+        if self._local_crawl_parser is None or self._local_crawl_limits is None:
+            return ""
+
+        include_question_page = _env_bool(
+            "BOT_LOCAL_CRAWL_INCLUDE_QUESTION_PAGE", True
+        )
+
+        urls: list[str] = []
+        if include_question_page and getattr(question, "page_url", None):
+            urls.append(str(question.page_url))
+
+        urls.extend(extract_http_urls(question.question_text or ""))
+        urls.extend(extract_http_urls(question.background_info or ""))
+        urls.extend(extract_http_urls(question.resolution_criteria or ""))
+        urls.extend(extract_http_urls(question.fine_print or ""))
+
+        try:
+            return await crawl_urls(
+                parser=self._local_crawl_parser,
+                urls=urls,
+                limits=self._local_crawl_limits,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "Playwright is not installed" in str(e):
+                logger.warning(str(e))
+                return ""
+            logger.info(
+                f"Local crawl failed for question {question.page_url}: {e}"
+            )
+            return ""
+
+    async def _get_local_crawl_context_cached(
+        self, question: MetaculusQuestion
+    ) -> str:
+        if not self._local_crawl_enabled():
+            return ""
+
+        try:
+            notepad = await self._get_notepad(question)
+        except Exception:
+            return await self._get_local_crawl_context(question)
+
+        existing = notepad.note_entries.get(_NOTEPAD_LOCAL_CRAWL_TASK_KEY)
+        if isinstance(existing, str):
+            return existing
+        if isinstance(existing, asyncio.Task):
+            return await existing
+
+        task = asyncio.create_task(self._get_local_crawl_context(question))
+        notepad.note_entries[_NOTEPAD_LOCAL_CRAWL_TASK_KEY] = task
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Local crawl task failed", exc_info=True)
+            result = ""
+
+        notepad.note_entries[_NOTEPAD_LOCAL_CRAWL_TASK_KEY] = result
+        return result
+
+    @staticmethod
+    def _tool_router_enabled() -> bool:
+        return _env_bool("BOT_ENABLE_TOOL_ROUTER", True)
+
+    @staticmethod
+    def _truncate_for_router(text: str, max_chars: int) -> str:
+        text = (text or "").strip()
+        if max_chars <= 0 or not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        marker = "\n\n[TRUNCATED]"
+        if len(marker) >= max_chars:
+            return marker[:max_chars]
+        return text[: max_chars - len(marker)] + marker
+
+    def _default_tool_router_plan(self, *, question: MetaculusQuestion) -> ToolRouterPlan:
+        ticker = self._infer_ticker_symbol(question)
+        has_ticker = bool(ticker)
+        looks_eps = self._looks_like_eps_question(question)
+        looks_revenue = self._looks_like_revenue_question(question)
+        return ToolRouterPlan(
+            use_web_search=_env_bool("BOT_ENABLE_WEB_SEARCH", True),
+            fetch_sec_filings=has_ticker
+            and _env_bool("BOT_ENABLE_FREE_SEC_FILINGS_PREFETCH", True),
+            fetch_sec_revenue=has_ticker
+            and looks_revenue
+            and _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True),
+            fetch_nasdaq_eps=has_ticker
+            and looks_eps
+            and _env_bool("BOT_ENABLE_FREE_EPS_PREFETCH", True),
+            notes="fallback-default",
+        )
+
+    def _normalize_tool_router_plan(
+        self, *, plan: ToolRouterPlan, question: MetaculusQuestion, inferred_ticker: str
+    ) -> ToolRouterPlan:
+        ticker = (inferred_ticker or "").strip().upper()
+        has_ticker = bool(ticker)
+        looks_eps = self._looks_like_eps_question(question)
+        looks_revenue = self._looks_like_revenue_question(question)
+
+        fetch_sec_filings = bool(
+            plan.fetch_sec_filings
+            and has_ticker
+            and _env_bool("BOT_ENABLE_FREE_SEC_FILINGS_PREFETCH", True)
+        )
+        fetch_sec_revenue = bool(
+            plan.fetch_sec_revenue
+            and has_ticker
+            and looks_revenue
+            and _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True)
+        )
+        fetch_nasdaq_eps = bool(
+            plan.fetch_nasdaq_eps
+            and has_ticker
+            and looks_eps
+            and _env_bool("BOT_ENABLE_FREE_EPS_PREFETCH", True)
+        )
+
+        use_web_search = bool(plan.use_web_search and _env_bool("BOT_ENABLE_WEB_SEARCH", True))
+
+        return ToolRouterPlan(
+            use_web_search=use_web_search,
+            fetch_sec_filings=fetch_sec_filings,
+            fetch_sec_revenue=fetch_sec_revenue,
+            fetch_nasdaq_eps=fetch_nasdaq_eps,
+            notes=(plan.notes or "").strip() or None,
+        )
+
+    async def _get_tool_router_plan(
+        self, *, question: MetaculusQuestion, local_crawl_context: str
+    ) -> ToolRouterPlan:
+        inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
+        looks_eps = self._looks_like_eps_question(question)
+        looks_revenue = self._looks_like_revenue_question(question)
+
+        llm = self.get_llm("parser", "llm")
+        schema = llm.get_schema_format_instructions_for_pydantic_type(ToolRouterPlan)
+
+        max_local_chars = _env_int("BOT_TOOL_ROUTER_LOCAL_CONTEXT_MAX_CHARS", 6000)
+        local_excerpt = self._truncate_for_router(local_crawl_context, max_local_chars)
+
+        prompt = clean_indents(
+            f"""
+            You are a tool-router for a forecasting research assistant.
+
+            Goal: decide which retrieval sources to use for THIS Metaculus question, before writing the research report.
+            Cost priority (cheapest/most reliable first):
+            1) Local crawl extracts (already available; do not request again).
+            2) Free official deterministic sources (SEC/Nasdaq) when relevant.
+            3) Web search (SmartSearcher/Exa or browsing models) only if needed.
+
+            Rules:
+            - Prefer to AVOID web search if local extracts + official sources are sufficient to answer the resolution criteria.
+            - Only request SEC/Nasdaq tools if a valid US public-company ticker is available.
+            - If the question asks for the latest status of an event (e.g., law passed, conflict outcome, election result),
+              web search is usually required unless the local extracts already contain up-to-date primary sources.
+            - Return ONLY the final JSON object, no other text.
+
+            Output schema:
+            {schema}
+
+            Tool meanings:
+            - fetch_sec_filings: get recent SEC 10-K/10-Q/8-K links (submissions endpoint).
+            - fetch_sec_revenue: get recent quarterly revenue series (companyfacts endpoint).
+            - fetch_nasdaq_eps: get analyst consensus EPS forecast (Nasdaq analyst API).
+            - use_web_search: run SmartSearcher/Exa or a browsing model to find missing info.
+
+            Inputs:
+            - Today: {datetime.now().strftime("%Y-%m-%d")}
+            - Inferred ticker (may be empty): {inferred_ticker}
+            - Heuristics: looks_like_eps={looks_eps}, looks_like_revenue={looks_revenue}
+
+            Question text:
+            {question.question_text}
+
+            Background info:
+            {question.background_info or ""}
+
+            Resolution criteria:
+            {question.resolution_criteria or ""}
+
+            Fine print:
+            {question.fine_print or ""}
+
+            Local crawl extracts (truncated):
+            {local_excerpt}
+            """
+        )
+
+        plan = await llm.invoke_and_return_verified_type(prompt, ToolRouterPlan)
+        return self._normalize_tool_router_plan(
+            plan=plan, question=question, inferred_ticker=inferred_ticker
+        )
+
+    async def _get_tool_router_plan_cached(
+        self, *, question: MetaculusQuestion, local_crawl_context: str
+    ) -> ToolRouterPlan:
+        if not self._tool_router_enabled():
+            return self._default_tool_router_plan(question=question)
+
+        try:
+            notepad = await self._get_notepad(question)
+        except Exception:
+            return await self._get_tool_router_plan(
+                question=question, local_crawl_context=local_crawl_context
+            )
+
+        existing = notepad.note_entries.get(_NOTEPAD_TOOL_ROUTER_PLAN_KEY)
+        if isinstance(existing, ToolRouterPlan):
+            return existing
+        if isinstance(existing, asyncio.Task):
+            return await existing
+
+        task: asyncio.Task[ToolRouterPlan] = asyncio.create_task(
+            self._get_tool_router_plan(
+                question=question, local_crawl_context=local_crawl_context
+            )
+        )
+        notepad.note_entries[_NOTEPAD_TOOL_ROUTER_PLAN_KEY] = task
+
+        try:
+            plan = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Tool router plan failed; falling back", exc_info=True)
+            plan = self._default_tool_router_plan(question=question)
+
+        notepad.note_entries[_NOTEPAD_TOOL_ROUTER_PLAN_KEY] = plan
+        return plan
+
     @staticmethod
     def _days_until_known(question: MetaculusQuestion) -> float | None:
         now = datetime.now(timezone.utc)
@@ -314,7 +659,7 @@ class SpringTemplateBot2026(ForecastBot):
         )
         days_until_known = self._days_until_known(question)
 
-        trust = 0.35 + 0.65 * confidence  # [~0.45, ~0.94]
+        trust = 0.15 + 0.35 * confidence  # [~0.20, ~0.47] — lean toward CP
         if days_until_known is not None:
             if days_until_known <= 7:
                 trust += 0.05
@@ -324,7 +669,7 @@ class SpringTemplateBot2026(ForecastBot):
                 trust -= 0.06
             elif days_until_known >= 90:
                 trust -= 0.03
-        trust = float(min(0.97, max(0.25, trust)))
+        trust = float(min(0.60, max(0.10, trust)))
 
         cp_logit = self._logit(cp)
         p_logit = self._logit(p)
@@ -416,10 +761,10 @@ class SpringTemplateBot2026(ForecastBot):
         # If community aggregate exists, shrink toward it by trust weight.
         community_cdf = self._get_community_cdf_percentiles(question)
         if community_cdf:
-            trust = 0.35 + 0.65 * confidence
+            trust = 0.15 + 0.35 * confidence  # lean toward CP
             if days_until_known is not None and days_until_known >= 180:
                 trust -= 0.05
-            trust = float(min(0.95, max(0.20, trust)))
+            trust = float(min(0.60, max(0.10, trust)))
 
             updated_against_community: list[Percentile] = []
             for p in percentiles:
@@ -1137,22 +1482,118 @@ class SpringTemplateBot2026(ForecastBot):
 
     _SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
     _SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
+    _SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
     _SEC_TICKER_MAP_TTL_S = 7 * 86400
     _SEC_COMPANYFACTS_TTL_S = 6 * 3600
+    _SEC_SUBMISSIONS_TTL_S = 6 * 3600
 
     _sec_ticker_to_cik_cache: dict[str, int] | None = None
     _sec_ticker_to_cik_cache_fetched_at: float | None = None
     _sec_companyfacts_cache: dict[int, tuple[float, dict]] = {}
+    _sec_submissions_cache: dict[int, tuple[float, dict]] = {}
+    _sec_user_agent_cached: str | None = None
 
     @staticmethod
-    def _sec_user_agent() -> str:
+    def _looks_like_email(s: str) -> bool:
+        return bool(re.search(r"[^\s<>]+@[^\s<>]+\.[^\s<>]+", s or ""))
+
+    @classmethod
+    def _git_config_value(cls, key: str) -> str | None:
+        git = shutil.which("git") or shutil.which("git.exe")
+        if not git:
+            return None
+        try:
+            proc = subprocess.run(
+                [git, "config", "--get", key],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+            )
+            value = (proc.stdout or "").strip()
+            return value or None
+        except Exception:
+            return None
+
+    @classmethod
+    def _git_remote_url(cls, remote: str) -> str | None:
+        git = shutil.which("git") or shutil.which("git.exe")
+        if not git:
+            return None
+        try:
+            proc = subprocess.run(
+                [git, "config", "--get", f"remote.{remote}.url"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+            )
+            value = (proc.stdout or "").strip()
+            return value or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_https_repo_url(url: str) -> str | None:
+        url = (url or "").strip()
+        if not url:
+            return None
+        if url.startswith("https://"):
+            return url.removesuffix(".git")
+        if url.startswith("http://"):
+            return ("https://" + url[len("http://") :]).removesuffix(".git")
+        if url.startswith("git@github.com:"):
+            # git@github.com:owner/repo.git -> https://github.com/owner/repo
+            path = url.removeprefix("git@github.com:").removesuffix(".git")
+            return f"https://github.com/{path}"
+        return None
+
+    @classmethod
+    def _derive_sec_user_agent(cls) -> str:
+        email_candidates = [
+            os.getenv("SEC_CONTACT_EMAIL", "").strip(),
+            os.getenv("GIT_AUTHOR_EMAIL", "").strip(),
+            os.getenv("GIT_COMMITTER_EMAIL", "").strip(),
+            os.getenv("EMAIL", "").strip(),
+            (cls._git_config_value("user.email") or "").strip(),
+        ]
+        contact_email = next(
+            (e for e in email_candidates if e and cls._looks_like_email(e)),
+            None,
+        )
+
+        repo_url = None
+        gh_repo = os.getenv("GITHUB_REPOSITORY", "").strip()
+        gh_server = os.getenv("GITHUB_SERVER_URL", "").strip() or "https://github.com"
+        if gh_repo:
+            repo_url = f"{gh_server.rstrip('/')}/{gh_repo}"
+        else:
+            repo_url = cls._to_https_repo_url(cls._git_remote_url("origin") or "")
+
+        if contact_email and repo_url:
+            return f"metac-bot-template (contact: {contact_email}; +{repo_url})"
+        if contact_email:
+            return f"metac-bot-template (contact: {contact_email})"
+        if repo_url:
+            return f"metac-bot-template (+{repo_url})"
+        return "metac-bot-template"
+
+    @classmethod
+    def _sec_user_agent(cls) -> str:
+        if cls._sec_user_agent_cached:
+            return cls._sec_user_agent_cached
+
         ua = os.getenv("SEC_USER_AGENT", "").strip()
         if ua and ua != "YOUR_SEC_USER_AGENT":
+            cls._sec_user_agent_cached = ua
             return ua
-        return (
-            "metac-bot-template/0.1 (SEC_USER_AGENT not set; "
-            "please set SEC_USER_AGENT='your app name (email)')"
-        )
+
+        derived = cls._derive_sec_user_agent()
+        cls._sec_user_agent_cached = derived
+        logger.debug(f"SEC_USER_AGENT not set; using derived User-Agent: {derived!r}")
+        return derived
 
     @classmethod
     def _sec_get_json(
@@ -1236,6 +1677,124 @@ class SpringTemplateBot2026(ForecastBot):
 
         cls._sec_companyfacts_cache[cik_int] = (now, payload)
         return payload
+
+    @classmethod
+    def _sec_get_submissions(cls, cik_int: int) -> dict | None:
+        cik_int = int(cik_int)
+        now = time.time()
+        cached = cls._sec_submissions_cache.get(cik_int)
+        if cached is not None:
+            fetched_at, payload = cached
+            if now - float(fetched_at) < cls._SEC_SUBMISSIONS_TTL_S:
+                return payload
+
+        cik10 = f"{cik_int:010d}"
+        url = cls._SEC_SUBMISSIONS_URL.format(cik10=cik10)
+        try:
+            payload = cls._sec_get_json(url, timeout_s=30, allowed_tries=2)
+        except Exception:
+            return None
+
+        cls._sec_submissions_cache[cik_int] = (now, payload)
+        return payload
+
+    @classmethod
+    def _sec_recent_filings_from_submissions(
+        cls,
+        *,
+        cik_int: int,
+        forms: set[str] | None = None,
+        max_items: int = 6,
+    ) -> tuple[str | None, list[dict]]:
+        payload = cls._sec_get_submissions(cik_int)
+        if not isinstance(payload, dict):
+            return None, []
+
+        company_name = str(payload.get("name") or "").strip() or None
+
+        filings = payload.get("filings")
+        if not isinstance(filings, dict):
+            return company_name, []
+        recent = filings.get("recent")
+        if not isinstance(recent, dict):
+            return company_name, []
+
+        forms_list = recent.get("form")
+        accession_list = recent.get("accessionNumber")
+        filing_date_list = recent.get("filingDate")
+        report_date_list = recent.get("reportDate")
+        primary_doc_list = recent.get("primaryDocument")
+
+        if not all(
+            isinstance(x, list)
+            for x in [
+                forms_list,
+                accession_list,
+                filing_date_list,
+                report_date_list,
+                primary_doc_list,
+            ]
+        ):
+            return company_name, []
+
+        n = min(
+            len(forms_list),
+            len(accession_list),
+            len(filing_date_list),
+            len(report_date_list),
+            len(primary_doc_list),
+        )
+
+        results: list[dict] = []
+        max_items = max(1, int(max_items))
+
+        for i in range(n):
+            form = str(forms_list[i] or "").strip().upper()
+            if forms is not None and form not in forms:
+                continue
+
+            accession = str(accession_list[i] or "").strip()
+            acc_no_dashes = accession.replace("-", "")
+            primary_doc = str(primary_doc_list[i] or "").strip()
+            filing_date = str(filing_date_list[i] or "").strip()
+            report_date = str(report_date_list[i] or "").strip()
+
+            index_url = ""
+            doc_url = ""
+            if acc_no_dashes and primary_doc:
+                index_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/{int(cik_int)}/"
+                    f"{acc_no_dashes}/{acc_no_dashes}-index.html"
+                )
+                doc_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/{int(cik_int)}/"
+                    f"{acc_no_dashes}/{primary_doc}"
+                )
+            elif acc_no_dashes:
+                index_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/{int(cik_int)}/"
+                    f"{acc_no_dashes}/{acc_no_dashes}-index.html"
+                )
+                doc_url = index_url
+
+            if not doc_url:
+                continue
+
+            results.append(
+                {
+                    "form": form,
+                    "filing_date": filing_date or None,
+                    "report_date": report_date or None,
+                    "accession": accession or None,
+                    "primary_document": primary_doc or None,
+                    "index_url": index_url or None,
+                    "doc_url": doc_url,
+                }
+            )
+            if len(results) >= max_items:
+                break
+
+        return company_name, results
 
     @staticmethod
     def _format_plain_number(x: float, *, max_decimals: int = 3) -> str:
@@ -1565,6 +2124,78 @@ class SpringTemplateBot2026(ForecastBot):
             lines.append(f"- {self._SEC_TICKER_MAP_URL}")
         return "\n".join(lines).strip()
 
+    async def _free_sec_filings_research_from_sec(
+        self, ticker: str, *, include_error: bool = False
+    ) -> str:
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return ""
+
+        try:
+            max_items = _env_int("BOT_SEC_FILINGS_MAX_ITEMS", 6)
+
+            def fetch() -> tuple[int | None, str | None, list[dict]]:
+                cik_int = self._sec_ticker_to_cik_int(ticker)
+                if cik_int is None:
+                    return None, None, []
+                company_name, filings = self._sec_recent_filings_from_submissions(
+                    cik_int=cik_int,
+                    forms={"10-K", "10-Q", "8-K"},
+                    max_items=max(1, max_items),
+                )
+                return int(cik_int), company_name, filings
+
+            cik_int, company_name, filings = await asyncio.to_thread(fetch)
+            if cik_int is None:
+                return (
+                    f"Could not map ticker to CIK via SEC ticker map: {ticker}"
+                    if include_error
+                    else ""
+                )
+
+            if not filings:
+                return (
+                    f"No recent SEC filings found (or failed to parse) for {ticker}"
+                    if include_error
+                    else ""
+                )
+
+            cik10 = f"{int(cik_int):010d}"
+            submissions_url = self._SEC_SUBMISSIONS_URL.format(cik10=cik10)
+
+            lines: list[str] = []
+            header_name = f" ({company_name})" if company_name else ""
+            lines.append(
+                f"Free data sources (SEC EDGAR filings) for {ticker}{header_name}:"
+            )
+            for item in filings:
+                form = str(item.get("form") or "")
+                filing_date = str(item.get("filing_date") or "")
+                report_date = str(item.get("report_date") or "")
+                doc_url = str(item.get("doc_url") or "")
+                index_url = str(item.get("index_url") or "")
+
+                date_bits = []
+                if filing_date:
+                    date_bits.append(f"filed {filing_date}")
+                if report_date:
+                    date_bits.append(f"report {report_date}")
+                date_part = f" ({', '.join(date_bits)})" if date_bits else ""
+
+                url = doc_url or index_url
+                if not url:
+                    continue
+                lines.append(f"- {form}{date_part}: {url}")
+
+            lines.append("Sources:")
+            lines.append(f"- {submissions_url}")
+            lines.append(f"- {self._SEC_TICKER_MAP_URL}")
+            return "\n".join(lines).strip()
+        except Exception as e:
+            if include_error:
+                return f"SEC filings prefetch failed: {e.__class__.__name__}: {e}"
+            return ""
+
     @staticmethod
     def _nasdaq_user_agent() -> str:
         ua = os.getenv("NASDAQ_USER_AGENT", "").strip()
@@ -1749,12 +2380,33 @@ class SpringTemplateBot2026(ForecastBot):
             return await self._free_revenue_research_from_sec(
                 question, include_error=True
             )
+        if strategy in {"free/sec-filings", "free/sec-submissions", "free/edgar"}:
+            ticker = self._infer_ticker_symbol(question)
+            if not ticker:
+                return ""
+            return await self._free_sec_filings_research_from_sec(
+                ticker, include_error=True
+            )
         return f"Unknown free research strategy: {strategy!r}"
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
-            research = ""
             researcher = self.get_llm("researcher")
+
+            if not researcher or researcher == "None" or researcher == "no_research":
+                return ""
+
+            local_crawl_context = await self._get_local_crawl_context_cached(question)
+            local_crawl_block = (
+                clean_indents(
+                    f"""
+                    Local crawl extracts:
+                    {local_crawl_context}
+                    """
+                )
+                if local_crawl_context
+                else ""
+            )
 
             if isinstance(researcher, str) and researcher.strip().lower().startswith(
                 "free/"
@@ -1763,43 +2415,55 @@ class SpringTemplateBot2026(ForecastBot):
                 research = await self._run_free_research(
                     question=question, strategy=strategy
                 )
+                combined = "\n\n".join(
+                    [part for part in [local_crawl_block, research] if part]
+                ).strip()
                 logger.info(
-                    f"Found Research for URL {question.page_url} (free strategy {strategy}):\n{research}"
+                    f"Found Research for URL {question.page_url} (free strategy {strategy}):\n{combined}"
                 )
-                return research
-
-            if _env_bool("BOT_ENABLE_FREE_EPS_PREFETCH", True):
-                ticker = (
-                    self._infer_ticker_symbol(question)
-                    if self._looks_like_eps_question(question)
-                    else None
-                )
-                if ticker:
-                    research = await self._free_eps_research_from_nasdaq(ticker)
-                    if research:
-                        logger.info(
-                            f"Found Research for URL {question.page_url} (free Nasdaq prefetch {ticker}):\n{research}"
-                        )
-                        return research
-
-            if _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True) and self._looks_like_revenue_question(
-                question
-            ):
-                research = await self._free_revenue_research_from_sec(question)
-                if research:
-                    logger.info(
-                        f"Found Research for URL {question.page_url} (free SEC revenue prefetch):\n{research}"
-                    )
-                    return research
+                return combined
 
             researcher_model_name = GeneralLlm.to_model_name(researcher)
             researcher_model_name_lower = researcher_model_name.lower()
             logger.info(f"Researcher strategy/model: {researcher_model_name}")
-            uses_web_search = (
+
+            tool_plan = (
+                await self._get_tool_router_plan_cached(
+                    question=question, local_crawl_context=local_crawl_context
+                )
+                if self._tool_router_enabled()
+                else self._default_tool_router_plan(question=question)
+            )
+            logger.info(
+                f"Tool router plan ({question.page_url}): {tool_plan.model_dump(mode='json')}"
+            )
+
+            inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
+
+            official_context_parts: list[str] = []
+            if tool_plan.fetch_sec_filings and inferred_ticker:
+                filings = await self._free_sec_filings_research_from_sec(inferred_ticker)
+                if filings:
+                    official_context_parts.append(filings)
+            if tool_plan.fetch_sec_revenue:
+                revenue = await self._free_revenue_research_from_sec(question)
+                if revenue:
+                    official_context_parts.append(revenue)
+            if tool_plan.fetch_nasdaq_eps and inferred_ticker:
+                eps = await self._free_eps_research_from_nasdaq(inferred_ticker)
+                if eps:
+                    official_context_parts.append(eps)
+
+            official_context = "\n\n".join(official_context_parts).strip()
+
+            model_supports_web_search = (
                 "search-preview" in researcher_model_name_lower
                 or researcher_model_name_lower.startswith("perplexity/")
                 or researcher_model_name_lower.startswith("smart-searcher/")
+                or researcher_model_name_lower.startswith("asknews/")
             )
+            use_web_search_for_call = bool(tool_plan.use_web_search)
+            uses_web_search = bool(use_web_search_for_call and model_supports_web_search)
             web_search_instructions = (
                 clean_indents(
                     """
@@ -1822,14 +2486,62 @@ class SpringTemplateBot2026(ForecastBot):
                 )
             )
 
+            official_instructions = (
+                clean_indents(
+                    """
+                    Free official data guidance:
+                    - You may be given deterministic extracts from official public endpoints (e.g. SEC EDGAR).
+                    - Prefer these sources when they directly answer the question.
+                    - Cite these sources by URL when you use them.
+                    """
+                )
+                if official_context
+                else ""
+            )
+            official_block = (
+                clean_indents(
+                    f"""
+                    Free official data extracts:
+                    {official_context}
+                    """
+                )
+                if official_context
+                else ""
+            )
+            local_crawl_instructions = (
+                clean_indents(
+                    """
+                    Local retrieval guidance:
+                    - You may be given locally-rendered extracts from the Metaculus question page and the explicit links mentioned in the question.
+                    - Prefer these extracts over additional web browsing/search when they already answer the question.
+                    - Cite these sources by URL when you use them.
+                    """
+                )
+                if local_crawl_context
+                else ""
+            )
+
             prompt = clean_indents(
                 f"""
                 You are an assistant to a superforecaster.
                 The superforecaster will give you a question they intend to forecast on.
                 To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
                 You do not produce forecasts yourself.
+                
+                Output constraints:
+                - Do NOT provide your own numeric forecast or probability (do not write lines like "Probability: 37%").
+                - You MAY report third-party market-implied probabilities (Polymarket/Kalshi/etc.) if found, clearly labeled as market prices and with a direct link.
+                - If you discuss uncertainty, keep it qualitative.
 
                 {web_search_instructions}
+
+                {local_crawl_instructions}
+
+                {local_crawl_block}
+
+                {official_instructions}
+
+                {official_block}
 
                 {self._resolution_criteria_research_guardrails()}
 
@@ -1847,7 +2559,13 @@ class SpringTemplateBot2026(ForecastBot):
                 """
             )
 
-            if isinstance(researcher, GeneralLlm):
+            if not use_web_search_for_call:
+                research = await self._invoke_llm_with_transient_fallback(
+                    "summarizer",
+                    prompt,
+                    context=f"Research synthesis ({question.page_url})",
+                )
+            elif isinstance(researcher, GeneralLlm):
                 research = await self._invoke_llm_with_transient_fallback(
                     "researcher", prompt, context=f"Research ({question.page_url})"
                 )
@@ -1870,9 +2588,11 @@ class SpringTemplateBot2026(ForecastBot):
                             f"Error: {error_text}"
                         )
                     else:
-                        logger.warning(f"AskNews research failed, continuing without it: {error_text}")
+                        logger.warning(
+                            f"AskNews research failed, continuing without it: {error_text}"
+                        )
                     research = ""
-            elif researcher.startswith("smart-searcher"):
+            elif isinstance(researcher, str) and researcher.startswith("smart-searcher"):
                 model_name = researcher.removeprefix("smart-searcher/")
                 model_name_lower = model_name.strip().lower()
                 if model_name_lower == "kiconnect" or model_name_lower.startswith(
@@ -1964,14 +2684,36 @@ class SpringTemplateBot2026(ForecastBot):
                     raise last_error if last_error is not None else RuntimeError(
                         "SmartSearcher failed without an exception"
                     )
-            elif not researcher or researcher == "None" or researcher == "no_research":
-                research = ""
             else:
                 research = await self._invoke_llm_with_transient_fallback(
                     "researcher", prompt, context=f"Research ({question.page_url})"
                 )
+            research = self._sanitize_research_report(research)
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
+
+    @classmethod
+    def _sanitize_research_report(cls, text: str) -> str:
+        """
+        Research reports are used as *inputs* to forecasting. Guard against models
+        accidentally emitting a final forecast line (e.g., "Probability: 42%").
+
+        Keep market-implied probabilities if they include a citation or URL.
+        """
+        if not text:
+            return ""
+
+        lines = text.splitlines()
+        cleaned: list[str] = []
+        for line in lines:
+            if _RESEARCH_FORECAST_LINE_RE.match(line or ""):
+                has_url = "http://" in line or "https://" in line
+                has_citation = "[" in line and "]" in line
+                if not (has_url or has_citation):
+                    continue
+            cleaned.append(line)
+
+        return "\n".join(cleaned).strip()
 
     async def summarize_research(
         self, question: MetaculusQuestion, research: str
@@ -2057,14 +2799,56 @@ class SpringTemplateBot2026(ForecastBot):
             "default", prompt, context=f"Binary forecast reasoning ({question.page_url})"
         )
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
-        binary_prediction: BinaryPrediction = (
-            await self._structure_output_with_transient_fallback(
-                text_to_structure=reasoning,
-                output_type=BinaryPrediction,
-                context=f"Binary parse ({question.page_url})",
-            )
-        )
-        decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
+
+        percent = _extract_probability_percent(reasoning)
+        if percent is not None:
+            decimal_pred = percent / 100.0
+        else:
+            try:
+                binary_prediction: BinaryPrediction = (
+                    await self._structure_output_with_transient_fallback(
+                        text_to_structure=reasoning,
+                        output_type=BinaryPrediction,
+                        context=f"Binary parse ({question.page_url})",
+                    )
+                )
+                decimal_pred = float(binary_prediction.prediction_in_decimal)
+            except Exception as e:
+                logger.warning(
+                    f"Binary parse failed ({question.page_url}); retrying by asking for the missing probability line. Error: {e}"
+                )
+                reasoning_excerpt = self._truncate_for_router(reasoning, 6000)
+                fix_prompt = clean_indents(
+                    f"""
+                    You previously wrote a rationale for a binary forecast but forgot to include the final required line.
+
+                    Output ONLY the final answer line in this exact format:
+                    Probability: ZZ%
+
+                    Do not output anything else.
+
+                    Question:
+                    {question.question_text}
+
+                    Rationale (excerpt):
+                    {reasoning_excerpt}
+                    """
+                )
+                fix = await self._invoke_llm_with_transient_fallback(
+                    "default",
+                    fix_prompt,
+                    context=f"Binary forecast probability fix ({question.page_url})",
+                )
+                logger.info(
+                    f"Binary forecast probability fix ({question.page_url}): {fix}"
+                )
+                fixed_percent = _extract_probability_percent(fix)
+                if fixed_percent is None:
+                    raise
+                reasoning = (reasoning.rstrip() + "\n" + fix.strip()).strip()
+                decimal_pred = fixed_percent / 100.0
+
+        decimal_pred = max(0.01, min(0.99, float(decimal_pred)))
         decimal_pred = self._calibrate_binary_probability(
             question=question,
             p=decimal_pred,

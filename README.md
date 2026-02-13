@@ -59,6 +59,16 @@ If you want the bot to *analyze questions for you* without auto-submitting forec
 - AskNews research is optional. If your AskNews plan does not allow API access, runs may fail unless you disable it.
 - Disable research (cheapest/minimal): `poetry run python main.py --mode tournament --tournament climate --no-submit --researcher no_research`
 - Use web search (requires `EXA_API_KEY` or `PERPLEXITY_API_KEY`): `poetry run python main.py --mode tournament --tournament climate --no-submit --researcher smart-searcher/openrouter/openai/gpt-oss-120b:free`
+- Optional: tool-router (enabled by default) decides which sources to fetch per question (adds ~1 extra non-search LLM call per question):
+  - Local crawl (if enabled) runs first, then free official sources (SEC/Nasdaq), then web search only if needed.
+  - Disable with `BOT_ENABLE_TOOL_ROUTER=false`.
+- Optional: locally crawl the Metaculus question page + the links mentioned in the question (Playwright/Chromium):
+  - Install optional deps: `poetry install --with web`
+  - Install runtime: `poetry run playwright install chromium`
+  - Enable: set `BOT_ENABLE_LOCAL_QUESTION_CRAWL=true` in `.env`
+- Optional: add free SEC EDGAR filings links (10-K/10-Q/8-K) as extra research context:
+  - Recommended: set `SEC_USER_AGENT` in `.env` (SEC policy / rate limiting)
+  - Router-controlled by default when a ticker can be inferred; hard-disable with `BOT_ENABLE_FREE_SEC_FILINGS_PREFETCH=false`
 - Override models (Litellm format): `--default-model openrouter/openai/gpt-oss-120b:free --parser-model openrouter/openai/gpt-oss-120b:free`
 - SmartSearcher “simple search” knobs: set `SMART_SEARCHER_NUM_SEARCHES` and `SMART_SEARCHER_NUM_SITES_PER_SEARCH` in `.env`.
 - Note: some OpenRouter `:free` models (e.g. `openrouter/openai/gpt-oss-120b:free`) require enabling "Free model publication" in your OpenRouter privacy settings, otherwise you may see a 404 "No endpoints found matching your data policy".
@@ -92,6 +102,12 @@ Inside the terminal, go to the directory you cloned the repository into and run 
 poetry install
 ```
 to install all required dependencies.
+
+If you plan to use the optional local crawl (Playwright), install the extra dependency group and Chromium:
+```bash
+poetry install --with web
+poetry run playwright install chromium
+```
 
 ### Setting environment variables
 
