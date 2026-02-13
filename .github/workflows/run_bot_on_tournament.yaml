@@ -71,8 +71,20 @@ jobs:
       #   with:
       #     path: .venv
       #     key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
       - name: Install dependencies
-        run: poetry install --no-interaction --no-root
+        run: poetry install --no-interaction --no-root --with web
+      - name: Install Playwright Chromium (with deps)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: poetry run playwright install --with-deps chromium
+      - name: Ensure Playwright Chromium present
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: poetry run playwright install chromium
       - name: Run bot
         run: |
           MANUAL_TOURNAMENT="${{ github.event.inputs.tournament }}"
@@ -132,3 +144,4 @@ jobs:
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
           MATRIX_NOTIFY_ALWAYS: "false"
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || secrets.SEC_USER_AGENT }}
+          BOT_ENABLE_LOCAL_QUESTION_CRAWL: "true"
