@@ -720,9 +720,10 @@ def prefetch_eia(
     lines: list[str] = []
     lines.append("Free data sources (EIA series):")
     appended_any = False
+    max_points = max(1, int(limits.max_points))
     for series_id, label in selected:
         url = f"{base_url}{series_id}"
-        params = {"api_key": api_key}
+        params = {"api_key": api_key, "length": max_points}
         try:
             resp = requests.get(
                 url,
@@ -744,7 +745,7 @@ def prefetch_eia(
             continue
 
         lines.append(f"- {label} ({series_id}):")
-        for row in raw_data[: max(1, int(limits.max_points))]:
+        for row in raw_data[:max_points]:
             if not isinstance(row, dict):
                 continue
             period = str(row.get("period") or "").strip()
