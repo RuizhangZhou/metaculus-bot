@@ -44,6 +44,52 @@ class TestOfficialStructuredSources(unittest.TestCase):
         self.assertEqual(out, "")
 
     @patch("official_structured_sources.requests.get")
+    def test_bea_filters_line_number_and_redacts_key(self, mock_get) -> None:
+        payload = {
+            "BEAAPI": {
+                "Results": {
+                    "Data": [
+                        {
+                            "TableName": "T10105",
+                            "LineNumber": "1",
+                            "LineDescription": "Gross domestic product",
+                            "TimePeriod": "2024Q1",
+                            "DataValue": "1,000",
+                            "UNIT_MULT": "6",
+                            "SeriesCode": "A191RC",
+                        },
+                        {
+                            "TableName": "T10105",
+                            "LineNumber": "2",
+                            "LineDescription": "Personal consumption expenditures",
+                            "TimePeriod": "2024Q1",
+                            "DataValue": "500",
+                            "UNIT_MULT": "6",
+                            "SeriesCode": "DPCERC",
+                        },
+                        {
+                            "TableName": "T10105",
+                            "LineNumber": "1",
+                            "LineDescription": "Gross domestic product",
+                            "TimePeriod": "2024Q2",
+                            "DataValue": "1,100",
+                            "UNIT_MULT": "6",
+                            "SeriesCode": "A191RC",
+                        },
+                    ]
+                }
+            }
+        }
+        mock_get.return_value = _FakeResponse(payload)
+        q = SimpleNamespace(question_text="GDP in 2026", background_info="")
+        out = prefetch_bea(question=q, api_key="SECRET", truncation_marker="[TRUNCATED]")
+        self.assertIn("Gross domestic product", out)
+        self.assertIn("2024Q2", out)
+        self.assertNotIn("Personal consumption expenditures", out)
+        self.assertIn("UserID=REDACTED", out)
+        self.assertNotIn("SECRET", out)
+
+    @patch("official_structured_sources.requests.get")
     def test_eia_missing_key_no_network(self, mock_get) -> None:
         mock_get.side_effect = AssertionError("network should not be called")
         q = SimpleNamespace(question_text="WTI crude oil price", background_info="")

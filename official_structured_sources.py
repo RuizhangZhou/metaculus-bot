@@ -635,6 +635,16 @@ def prefetch_bea(
         if not isinstance(rows, list) or not rows:
             continue
 
+        filtered_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("LineNumber") or "").strip() != str(spec.line_number):
+                continue
+            filtered_rows.append(row)
+        if not filtered_rows:
+            continue
+
         def parse_value(raw: Any) -> float | None:
             if not isinstance(raw, str):
                 return None
@@ -647,23 +657,48 @@ def prefetch_bea(
             except Exception:
                 return None
 
-        parsed_rows: list[tuple[str, float]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
+        parsed_rows: list[tuple[str, float, str]] = []
+        for row in filtered_rows:
             period = str(row.get("TimePeriod") or "").strip()
-            value = parse_value(row.get("DataValue"))
+            raw_value = str(row.get("DataValue") or "").strip()
+            value = parse_value(raw_value)
             if not period or value is None:
                 continue
-            parsed_rows.append((period, float(value)))
+            parsed_rows.append((period, float(value), raw_value))
         if not parsed_rows:
             continue
-        parsed_rows.sort(key=lambda t: t[0])
-        last_rows = parsed_rows[-max(1, int(limits.max_points)) :]
 
-        lines.append(f"- {spec.label} (table {spec.table_name}, line {spec.line_number}):")
-        for period, value in last_rows:
-            lines.append(f"  - {period}: {value:g}")
+        unit_mult_raw = str(filtered_rows[0].get("UNIT_MULT") or "").strip()
+        series_code = str(filtered_rows[0].get("SeriesCode") or "").strip()
+        try:
+            unit_mult = int(unit_mult_raw)
+        except Exception:
+            unit_mult = None
+
+        by_period: dict[str, tuple[float, str]] = {}
+        for period, value, raw_value in parsed_rows:
+            by_period[period] = (value, raw_value)
+        unique_rows = [(p, v, raw) for p, (v, raw) in by_period.items()]
+        unique_rows.sort(key=lambda t: t[0])
+        last_rows = unique_rows[-max(1, int(limits.max_points)) :]
+
+        header_bits: list[str] = [f"table {spec.table_name}", f"line {spec.line_number}"]
+        if series_code:
+            header_bits.append(f"series {series_code}")
+        if unit_mult_raw:
+            header_bits.append(f"UNIT_MULT={unit_mult_raw}")
+
+        lines.append(f"- {spec.label} ({', '.join(header_bits)}):")
+        for period, value, raw_value in last_rows:
+            suffix = ""
+            if unit_mult is not None:
+                try:
+                    denom = 10 ** max(0, 12 - unit_mult)
+                    approx_t = value / float(denom)
+                    suffix = f" (≈{approx_t:.2f}T)"
+                except Exception:
+                    suffix = ""
+            lines.append(f"  - {period}: {raw_value}{suffix}".rstrip())
         lines.append("  - Source:")
         source_params = dict(params)
         source_params["UserID"] = "REDACTED"
