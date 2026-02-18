@@ -2828,7 +2828,9 @@ class SpringTemplateBot2026(ForecastBot):
 
             official_context = "\n\n".join(official_context_parts).strip()
             official_total_budget = _env_int("BOT_OFFICIAL_TOTAL_CHAR_BUDGET", 12_000)
-            if official_context and official_total_budget > 0:
+            if official_total_budget <= 0:
+                official_context = ""
+            elif official_context:
                 official_context = truncate_official_text(
                     official_context,
                     max_chars=official_total_budget,
