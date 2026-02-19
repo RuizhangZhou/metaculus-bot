@@ -136,6 +136,10 @@ jobs:
           KICONNECT_API_KEY: ${{ secrets.KICONNECT_API_KEY }}
           KICONNECT_MODEL: ${{ vars.KICONNECT_MODEL }}
           KICONNECT_MODEL_FALLBACKS: ${{ vars.KICONNECT_MODEL_FALLBACKS }}
+          # KIconnect TLS:
+          # Prefer fixing the server certificate chain (fullchain / intermediate CA).
+          # If you still see SSL/certificate errors, set SSL_VERIFY to a CA bundle path
+          # (or as a last resort, SSL_VERIFY="false" which disables verification).
           BOT_REQUIRE_KICONNECT: "true"
           BOT_ENABLE_FALLBACK: "true"
           BOT_FALLBACK_MODEL: "openrouter/openai/gpt-oss-120b:free"

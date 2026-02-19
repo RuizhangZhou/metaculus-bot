@@ -273,17 +273,59 @@ class SpringTemplateBot2026(ForecastBot):
             return True
         if "timeout" in error_name:
             return True
+        if "connection" in error_name:
+            return True
         if "rate limit" in error_text or "rate_limit" in error_text:
             return True
         if "timed out" in error_text or "timeout" in error_text:
+            return True
+        if "connection error" in error_text or "api connection error" in error_text:
+            return True
+        if "connection refused" in error_text or "connection reset" in error_text:
+            return True
+        if "failed to establish a new connection" in error_text:
+            return True
+        if "temporary failure in name resolution" in error_text or "name resolution" in error_text:
+            return True
+        if "dns" in error_text and "fail" in error_text:
+            return True
+        if "ssl" in error_text or "tls" in error_text or "certificate" in error_text:
+            return True
+        if "bad gateway" in error_text or "service unavailable" in error_text:
+            return True
+        if "gateway timeout" in error_text or "internal server error" in error_text:
             return True
         if "free-models-per-day" in error_text or "quota" in error_text:
             return True
         if "temporarily rate-limited" in error_text or "rate-limited upstream" in error_text:
             return True
+        if " 500" in error_text or " 502" in error_text or " 503" in error_text or " 504" in error_text:
+            return True
         if '"code":429' in error_text or " 429" in error_text:
             return True
         return False
+
+    @staticmethod
+    def _parse_ssl_verify_env(name: str) -> bool | str | None:
+        """
+        Parse an ssl_verify-style env var.
+
+        - unset/empty -> None (use library default)
+        - true/false -> bool
+        - otherwise -> treat as a path to a CA bundle (string)
+        """
+        raw = os.getenv(name)
+        if raw is None:
+            return None
+        raw = raw.strip()
+        if not raw:
+            return None
+        lowered = raw.lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+        return raw
 
     @staticmethod
     def _sigmoid(x: float) -> float:
@@ -1171,6 +1213,7 @@ class SpringTemplateBot2026(ForecastBot):
             "extra_headers",
             "extra_body",
             "custom_llm_provider",
+            "ssl_verify",
         ):
             if base_llm.litellm_kwargs.get(key) is not None:
                 clone_kwargs[key] = base_llm.litellm_kwargs[key]
@@ -1386,6 +1429,7 @@ class SpringTemplateBot2026(ForecastBot):
                 # Treat KIconnect as an OpenAI-compatible /chat/completions endpoint.
                 # Example base_url: https://.../api/v1
                 base_model = f"openai/{kiconnect_model}"
+                ssl_verify = cls._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
                 base_llm_kwargs = {
                     "base_url": kiconnect_api_url,
                     "api_key": kiconnect_api_key,
@@ -1393,6 +1437,8 @@ class SpringTemplateBot2026(ForecastBot):
                     # (important for KICONNECT_MODEL_FALLBACKS like gpt-oss-*).
                     "custom_llm_provider": "openai",
                 }
+                if ssl_verify is not None:
+                    base_llm_kwargs["ssl_verify"] = ssl_verify
 
             if not base_model:
                 if os.getenv("OPENROUTER_API_KEY"):
@@ -3124,6 +3170,10 @@ class SpringTemplateBot2026(ForecastBot):
                         raise ValueError(
                             "smart-searcher/kiconnect requested but KICONNECT_API_URL/KICONNECT_API_KEY/KICONNECT_MODEL are not all set."
                         )
+                    ssl_verify = self._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
+                    search_llm_kwargs: dict = {}
+                    if ssl_verify is not None:
+                        search_llm_kwargs["ssl_verify"] = ssl_verify
                     override_model = None
                     if "/" in model_name:
                         _, override_model = model_name.split("/", 1)
@@ -3133,6 +3183,10 @@ class SpringTemplateBot2026(ForecastBot):
                         temperature=0,
                         base_url=kiconnect_api_url,
                         api_key=kiconnect_api_key,
+                        # Ensure LiteLLM treats unknown model names as OpenAI-compatible
+                        # (important for KICONNECT_MODEL_FALLBACKS like gpt-oss-*).
+                        custom_llm_provider="openai",
+                        **search_llm_kwargs,
                     )
                     model_name = search_llm
                 try:
