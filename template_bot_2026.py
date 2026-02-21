@@ -21,7 +21,6 @@ from typing import Any
 from typing import Literal
 from typing import TypeVar
 from typing import Sequence
-from typing import cast
 
 import requests
 from pydantic import BaseModel
@@ -65,8 +64,6 @@ from source_catalog import (
     render_sources_markdown as render_source_catalog_markdown,
     suggest_sources_for_question as suggest_source_catalog_sources,
 )
-
-from secret_redaction import redact_secrets
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -270,11 +267,16 @@ class SpringTemplateBot2026(ForecastBot):
 
     def make_llm_dict(self) -> dict[str, str | dict[str, Any] | None]:
         """
-        Prevent leaking API keys/tokens in Metaculus comments/logs when
-        `extra_metadata_in_explanation=True`.
+        Only expose model names in Metaculus comments/logs when
+        `extra_metadata_in_explanation=True` (avoid leaking provider config).
         """
-        llm_dict = super().make_llm_dict()
-        return cast(dict[str, str | dict[str, Any] | None], redact_secrets(llm_dict))
+        safe: dict[str, str | dict[str, Any] | None] = {}
+        for purpose, llm in self._llms.items():
+            if isinstance(llm, GeneralLlm):
+                safe[purpose] = llm.model
+            else:
+                safe[purpose] = llm
+        return safe
 
     @staticmethod
     def _is_transient_provider_error(error: BaseException) -> bool:

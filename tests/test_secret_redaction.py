@@ -41,12 +41,9 @@ class TestSecretRedaction(unittest.TestCase):
         )
         llm_dict = bot.make_llm_dict()
         default = llm_dict.get("default")
-        self.assertIsInstance(default, dict)
-        assert isinstance(default, dict)
-        self.assertIn("api_key", default)
-        self.assertEqual(default["api_key"], "<redacted>")
+        self.assertIsInstance(default, str)
+        self.assertEqual(default, "openai/gpt-4o-mini")
 
 
 if __name__ == "__main__":
     unittest.main()
-
