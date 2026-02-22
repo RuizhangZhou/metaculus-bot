@@ -1,53 +1,116 @@
 version: 1
-# Human-curated (but bot-maintained) list of high-signal sources to consult.
-# - This file is safe to auto-update on `main` (restricted to this file only).
-# - Entries are keyed by `url` (exact match).
-# - The bot may add/remove/update entries over time based on retrospectives.
-updated_at: 1970-01-01T00:00:00+00:00
+updated_at: '2026-02-22T01:31:22.988390+00:00'
 sources:
-  # Official / structured sources (already supported by built-in tools/prefetchers).
-  - url: https://www.sec.gov/files/company_tickers.json
-    title: SEC ticker→CIK map
-    tags: [sec, edgar, xbrl, api]
-    notes: Maps tickers to CIK. Used for SEC endpoints. Requires SEC_USER_AGENT per SEC policy.
-  - url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000000000.json
-    title: SEC EDGAR companyfacts (template)
-    tags: [sec, edgar, xbrl, financials, api]
-    notes: Template URL; replace CIK0000000000 with the 10-digit CIK for a company. Requires SEC_USER_AGENT.
-  - url: https://data.sec.gov/submissions/CIK0000000000.json
-    title: SEC EDGAR submissions (template)
-    tags: [sec, edgar, filings, api]
-    notes: Template URL; replace CIK0000000000 with the 10-digit CIK. Provides recent filing links. Requires SEC_USER_AGENT.
-  - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
-    title: Nasdaq analyst EPS forecast (example)
-    tags: [nasdaq, eps, api]
-    notes: Example endpoint (replace ticker). Some endpoints work best with a browser-like NASDAQ_USER_AGENT.
-  - url: https://fred.stlouisfed.org/docs/api/fred/
-    title: FRED API documentation
-    tags: [fred, macro, api]
-    notes: Requires FRED_API_KEY for API calls. Use tools to query series/observations.
-  - url: https://www.bls.gov/developers/
-    title: BLS public data API (developers)
-    tags: [bls, macro, labor, api]
-    notes: BLS_API_KEY is optional but helps with quotas. Use tools to fetch time series (CPI, unemployment, payrolls).
-  - url: https://apps.bea.gov/api/
-    title: BEA API documentation
-    tags: [bea, macro, gdp, pce, api]
-    notes: Requires BEA_API_KEY. Use tools to fetch NIPA tables (GDP/PCE etc).
-  - url: https://www.eia.gov/opendata/
-    title: EIA Open Data documentation
-    tags: [eia, energy, oil, api]
-    notes: Requires EIA_API_KEY. Use tools to fetch series (API v2).
-  - url: https://www.federalregister.gov/api/v1/documents.json
-    title: Federal Register documents API
-    tags: [federal-register, regulation, policy, api]
-    notes: No key. Useful for verifiable notice/rule publication/effective dates.
-  - url: https://www.nhc.noaa.gov/gtwo.xml
-    title: NOAA NHC tropical outlook RSS
-    tags: [noaa, nhc, hurricane, weather, rss]
-    notes: No key. Tropical Weather Outlook RSS feed.
-  - url: https://earthquake.usgs.gov/fdsnws/event/1/query
-    title: USGS earthquake query API
-    tags: [usgs, earthquakes, hazards, api]
-    notes: No key. Use GeoJSON queries for recent earthquakes (magnitude/time filters).
-
+- url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
+  title: Nasdaq analyst EPS forecast (example)
+  tags:
+  - nasdaq
+  - eps
+  - api
+  notes: Example endpoint (replace ticker). Some endpoints work best with a browser-like NASDAQ_USER_AGENT.
+- url: https://apps.bea.gov/api/
+  title: BEA API documentation
+  tags:
+  - bea
+  - macro
+  - gdp
+  - pce
+  - api
+  notes: Requires BEA_API_KEY. Use tools to fetch NIPA tables (GDP/PCE etc).
+- url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000000000.json
+  title: SEC EDGAR companyfacts (template)
+  tags:
+  - sec
+  - edgar
+  - xbrl
+  - financials
+  - api
+  notes: Template URL; replace CIK0000000000 with the 10-digit CIK for a company. Requires SEC_USER_AGENT.
+- url: https://data.sec.gov/submissions/CIK0000000000.json
+  title: SEC EDGAR submissions (template)
+  tags:
+  - sec
+  - edgar
+  - filings
+  - api
+  notes: Template URL; replace CIK0000000000 with the 10-digit CIK. Provides recent filing links. Requires SEC_USER_AGENT.
+- url: https://earthquake.usgs.gov/fdsnws/event/1/query
+  title: USGS earthquake query API
+  tags:
+  - usgs
+  - earthquakes
+  - hazards
+  - api
+  notes: No key. Use GeoJSON queries for recent earthquakes (magnitude/time filters).
+- url: https://fred.stlouisfed.org/docs/api/fred/
+  title: FRED API documentation
+  tags:
+  - fred
+  - macro
+  - api
+  notes: Requires FRED_API_KEY for API calls. Use tools to query series/observations.
+- url: https://www.bls.gov/developers/
+  title: BLS public data API (developers)
+  tags:
+  - bls
+  - macro
+  - labor
+  - api
+  notes: BLS_API_KEY is optional but helps with quotas. Use tools to fetch time series (CPI, unemployment, payrolls).
+- url: https://www.eia.gov/opendata/
+  title: EIA Open Data documentation
+  tags:
+  - eia
+  - energy
+  - oil
+  - api
+  notes: Requires EIA_API_KEY. Use tools to fetch series (API v2).
+- url: https://www.federalregister.gov/api/v1/documents.json
+  title: Federal Register documents API
+  tags:
+  - federal-register
+  - regulation
+  - policy
+  - api
+  notes: No key. Useful for verifiable notice/rule publication/effective dates.
+- url: https://www.nhc.noaa.gov/gtwo.xml
+  title: NOAA NHC tropical outlook RSS
+  tags:
+  - noaa
+  - nhc
+  - hurricane
+  - weather
+  - rss
+  notes: No key. Tropical Weather Outlook RSS feed.
+- url: https://www.sec.gov/files/company_tickers.json
+  title: SEC ticker→CIK map
+  tags:
+  - sec
+  - edgar
+  - xbrl
+  - api
+  notes: Maps tickers to CIK. Used for SEC endpoints. Requires SEC_USER_AGENT per SEC policy.
+- url: https://www.tsa.gov/news/press/releases/2025/12/22/tsa-prepares-for-holiday-travel-season-cap-record-year
+  title: TSA Prepares for Holiday Travel Season
+  tags:
+  - tsa
+  - news
+  notes: Press release on TSA's preparations for travel seasons.
+  added_at: '2026-02-22T01:31:22.988390+00:00'
+  last_seen_at: '2026-02-22T01:31:22.988390+00:00'
+- url: https://www.tsa.gov/news/press/testimony/2026/02/11/oversight-hearing-potential-dhs-shutdown-impacts
+  title: Oversight Hearing on DHS Shutdown Impacts
+  tags:
+  - tsa
+  - news
+  notes: Relevant testimony discussing TSA operations.
+  added_at: '2026-02-22T01:31:22.988390+00:00'
+  last_seen_at: '2026-02-22T01:31:22.988390+00:00'
+- url: https://www.tsa.gov/travel/passenger-volumes
+  title: TSA Passenger Volumes
+  tags:
+  - tsa
+  - data
+  notes: Official TSA page for passenger volume statistics.
+  added_at: '2026-02-22T01:31:22.988390+00:00'
+  last_seen_at: '2026-02-22T01:31:22.988390+00:00'
