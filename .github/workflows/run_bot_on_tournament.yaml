@@ -43,13 +43,14 @@ on:
 
 # Add concurrency group to prevent parallel runs
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 # Daily job to run the simple forecast bot
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    timeout-minutes: 70
     environment: "metaculus bot"
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
@@ -78,14 +79,18 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
       - name: Install dependencies
+        timeout-minutes: 20
         run: poetry install --no-interaction --no-root --with web
       - name: Install Playwright Chromium (with deps)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 15
         run: poetry run playwright install --with-deps chromium
       - name: Ensure Playwright Chromium present
         if: steps.playwright-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 10
         run: poetry run playwright install chromium
       - name: Run bot
+        timeout-minutes: 60
         run: |
           MANUAL_TOURNAMENT="${{ github.event.inputs.tournament }}"
           RESEARCHER="${{ github.event.inputs.researcher }}"
@@ -103,6 +108,7 @@ jobs:
           export SMART_SEARCHER_NUM_SEARCHES
           export SMART_SEARCHER_NUM_SITES_PER_SEARCH
           export SMART_SEARCHER_USE_ADVANCED_FILTERS
+          TOURNAMENT_TIMEOUT_MINUTES="${BOT_TOURNAMENT_TIMEOUT_MINUTES:-30}"
 
           # Build tournament list
           # If manual input provided, only run that tournament
@@ -123,7 +129,13 @@ jobs:
             ARGS=(main.py --mode tournament --tournament "$TOURNAMENT" --researcher "$RESEARCHER" --submit)
             if [ -n "$DEFAULT_MODEL" ]; then ARGS+=(--default-model "$DEFAULT_MODEL"); fi
             if [ -n "$PARSER_MODEL" ]; then ARGS+=(--parser-model "$PARSER_MODEL"); fi
-            poetry run python "${ARGS[@]}" || echo "Warning: Failed to process $TOURNAMENT, continuing..."
+            EXIT_CODE=0
+            timeout --signal=TERM --kill-after=2m "${TOURNAMENT_TIMEOUT_MINUTES}m" poetry run python "${ARGS[@]}" || EXIT_CODE=$?
+            if [ "$EXIT_CODE" -eq 124 ]; then
+              echo "Warning: Timed out after ${TOURNAMENT_TIMEOUT_MINUTES}m for $TOURNAMENT, continuing..."
+            elif [ "$EXIT_CODE" -ne 0 ]; then
+              echo "Warning: Failed to process $TOURNAMENT (exit code $EXIT_CODE), continuing..."
+            fi
           done
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
@@ -149,3 +161,4 @@ jobs:
           MATRIX_NOTIFY_ALWAYS: "false"
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || secrets.SEC_USER_AGENT }}
           BOT_ENABLE_LOCAL_QUESTION_CRAWL: "true"
+          BOT_TOURNAMENT_TIMEOUT_MINUTES: ${{ vars.BOT_TOURNAMENT_TIMEOUT_MINUTES }}
