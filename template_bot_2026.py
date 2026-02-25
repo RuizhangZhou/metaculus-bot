@@ -264,6 +264,8 @@ class SpringTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+    _smart_searcher_disabled_reason = None
+    _smart_searcher_consecutive_failures = 0
 
     def make_llm_dict(self) -> dict[str, str | dict[str, Any] | None]:
         """
@@ -316,6 +318,30 @@ class SpringTemplateBot2026(ForecastBot):
         if " 500" in error_text or " 502" in error_text or " 503" in error_text or " 504" in error_text:
             return True
         if '"code":429' in error_text or " 429" in error_text:
+            return True
+        return False
+
+    @staticmethod
+    def _is_probably_exa_error(error: BaseException) -> bool:
+        error_text = str(error).lower()
+        if "api.exa.ai" in error_text or "exa.ai" in error_text:
+            return True
+        if "exa_api_key" in error_text or "exasearcher" in error_text:
+            return True
+        if isinstance(error, asyncio.TimeoutError) and "30 seconds" in error_text:
+            return True
+        return False
+
+    @staticmethod
+    def _is_exa_nonrecoverable_error(error: BaseException) -> bool:
+        error_text = str(error).lower()
+        if "exa_api_key" in error_text and ("not set" in error_text or "missing" in error_text):
+            return True
+        if "invalid api key" in error_text or "unauthorized" in error_text or " 401" in error_text:
+            return True
+        if "payment required" in error_text or "insufficient credits" in error_text or " 402" in error_text:
+            return True
+        if "forbidden" in error_text or " 403" in error_text:
             return True
         return False
 
@@ -3172,105 +3198,173 @@ class SpringTemplateBot2026(ForecastBot):
                         )
                     research = ""
             elif isinstance(researcher, str) and researcher.startswith("smart-searcher"):
-                model_name = researcher.removeprefix("smart-searcher/")
-                model_name_lower = model_name.strip().lower()
-                if model_name_lower == "kiconnect" or model_name_lower.startswith(
-                    "kiconnect/"
-                ):
-                    kiconnect_api_url = os.getenv("KICONNECT_API_URL", "").strip()
-                    kiconnect_api_key = os.getenv("KICONNECT_API_KEY", "").strip()
-                    kiconnect_model = os.getenv("KICONNECT_MODEL", "").strip()
-                    if not (kiconnect_api_url and kiconnect_api_key and kiconnect_model):
-                        raise ValueError(
-                            "smart-searcher/kiconnect requested but KICONNECT_API_URL/KICONNECT_API_KEY/KICONNECT_MODEL are not all set."
-                        )
-                    ssl_verify = self._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
-                    search_llm_kwargs: dict = {}
-                    if ssl_verify is not None:
-                        search_llm_kwargs["ssl_verify"] = ssl_verify
-                    override_model = None
-                    if "/" in model_name:
-                        _, override_model = model_name.split("/", 1)
-                        override_model = override_model.strip() or None
-                    search_llm = GeneralLlm(
-                        model=f"openai/{override_model or kiconnect_model}",
-                        temperature=0,
-                        base_url=kiconnect_api_url,
-                        api_key=kiconnect_api_key,
-                        # Ensure LiteLLM treats unknown model names as OpenAI-compatible
-                        # (important for KICONNECT_MODEL_FALLBACKS like gpt-oss-*).
-                        custom_llm_provider="openai",
-                        **search_llm_kwargs,
+                fallback_research = "\n\n".join(
+                    [part for part in [local_crawl_block, official_block] if part]
+                ).strip()
+                disabled_reason = getattr(self, "_smart_searcher_disabled_reason", None)
+                if disabled_reason:
+                    logger.warning(
+                        "SmartSearcher disabled (%s). Continuing without web search for %s.",
+                        disabled_reason,
+                        question.page_url,
                     )
-                    model_name = search_llm
-                try:
-                    num_searches_to_run = int(
-                        os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2")
-                    )
-                except Exception:
-                    num_searches_to_run = 2
-                try:
-                    num_sites_per_search = int(
-                        os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
-                    )
-                except Exception:
-                    num_sites_per_search = 10
-                use_advanced_filters = (
-                    os.getenv("SMART_SEARCHER_USE_ADVANCED_FILTERS", "")
-                    .strip()
-                    .lower()
-                    in {"1", "true", "yes", "y"}
-                )
-                candidate_models: list[str | GeneralLlm] = [model_name]
-                if isinstance(model_name, GeneralLlm):
-                    candidate_models.extend(
-                        self._make_kiconnect_fallback_llms_from_llm(model_name)
-                    )
-                    fallback_search_model_name = self._fallback_model_name_for(
-                        model_name.model
-                    )
-                    if (
-                        fallback_search_model_name
-                        and fallback_search_model_name != model_name.model
-                    ):
-                        candidate_models.append(
-                            GeneralLlm(model=fallback_search_model_name, temperature=0)
-                        )
-
-                seen: set[str] = set()
-                deduped_models: list[str | GeneralLlm] = []
-                for candidate in candidate_models:
-                    candidate_name = GeneralLlm.to_model_name(candidate)
-                    if candidate_name in seen:
-                        continue
-                    seen.add(candidate_name)
-                    deduped_models.append(candidate)
-
-                last_error: BaseException | None = None
-                for idx, candidate in enumerate(deduped_models, start=1):
-                    searcher = SmartSearcher(
-                        model=candidate,
-                        temperature=0,
-                        num_searches_to_run=max(1, num_searches_to_run),
-                        num_sites_per_search=max(1, num_sites_per_search),
-                        use_advanced_filters=use_advanced_filters,
-                    )
-                    try:
-                        research = await searcher.invoke(prompt)
-                        break
-                    except BaseException as e:
-                        last_error = e
-                        if not self._is_transient_provider_error(e):
-                            raise
-                        if idx >= len(deduped_models):
-                            raise
-                        logger.warning(
-                            f"SmartSearcher ({question.page_url}): search model '{GeneralLlm.to_model_name(candidate)}' failed; retrying with fallback search model #{idx} '{GeneralLlm.to_model_name(deduped_models[idx])}'. Error: {e}"
-                        )
+                    research = fallback_research
                 else:
-                    raise last_error if last_error is not None else RuntimeError(
-                        "SmartSearcher failed without an exception"
+                    model_name = researcher.removeprefix("smart-searcher/")
+                    model_name_lower = model_name.strip().lower()
+                    if model_name_lower == "kiconnect" or model_name_lower.startswith(
+                        "kiconnect/"
+                    ):
+                        kiconnect_api_url = os.getenv("KICONNECT_API_URL", "").strip()
+                        kiconnect_api_key = os.getenv("KICONNECT_API_KEY", "").strip()
+                        kiconnect_model = os.getenv("KICONNECT_MODEL", "").strip()
+                        if not (
+                            kiconnect_api_url and kiconnect_api_key and kiconnect_model
+                        ):
+                            raise ValueError(
+                                "smart-searcher/kiconnect requested but KICONNECT_API_URL/KICONNECT_API_KEY/KICONNECT_MODEL are not all set."
+                            )
+                        ssl_verify = self._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
+                        search_llm_kwargs: dict = {}
+                        if ssl_verify is not None:
+                            search_llm_kwargs["ssl_verify"] = ssl_verify
+                        override_model = None
+                        if "/" in model_name:
+                            _, override_model = model_name.split("/", 1)
+                            override_model = override_model.strip() or None
+                        search_llm = GeneralLlm(
+                            model=f"openai/{override_model or kiconnect_model}",
+                            temperature=0,
+                            base_url=kiconnect_api_url,
+                            api_key=kiconnect_api_key,
+                            # Ensure LiteLLM treats unknown model names as OpenAI-compatible
+                            # (important for KICONNECT_MODEL_FALLBACKS like gpt-oss-*).
+                            custom_llm_provider="openai",
+                            **search_llm_kwargs,
+                        )
+                        model_name = search_llm
+                    try:
+                        num_searches_to_run = int(
+                            os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2")
+                        )
+                    except Exception:
+                        num_searches_to_run = 2
+                    try:
+                        num_sites_per_search = int(
+                            os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
+                        )
+                    except Exception:
+                        num_sites_per_search = 10
+                    use_advanced_filters = (
+                        os.getenv("SMART_SEARCHER_USE_ADVANCED_FILTERS", "")
+                        .strip()
+                        .lower()
+                        in {"1", "true", "yes", "y"}
                     )
+                    max_exa_failures = _env_int(
+                        "BOT_SMART_SEARCHER_MAX_CONSECUTIVE_FAILURES", 2
+                    )
+                    candidate_models: list[str | GeneralLlm] = [model_name]
+                    if isinstance(model_name, GeneralLlm):
+                        candidate_models.extend(
+                            self._make_kiconnect_fallback_llms_from_llm(model_name)
+                        )
+                        fallback_search_model_name = self._fallback_model_name_for(
+                            model_name.model
+                        )
+                        if (
+                            fallback_search_model_name
+                            and fallback_search_model_name != model_name.model
+                        ):
+                            candidate_models.append(
+                                GeneralLlm(
+                                    model=fallback_search_model_name, temperature=0
+                                )
+                            )
+
+                    seen: set[str] = set()
+                    deduped_models: list[str | GeneralLlm] = []
+                    for candidate in candidate_models:
+                        candidate_name = GeneralLlm.to_model_name(candidate)
+                        if candidate_name in seen:
+                            continue
+                        seen.add(candidate_name)
+                        deduped_models.append(candidate)
+
+                    last_error: BaseException | None = None
+                    for idx, candidate in enumerate(deduped_models, start=1):
+                        searcher = SmartSearcher(
+                            model=candidate,
+                            temperature=0,
+                            num_searches_to_run=max(1, num_searches_to_run),
+                            num_sites_per_search=max(1, num_sites_per_search),
+                            use_advanced_filters=use_advanced_filters,
+                        )
+                        try:
+                            research = await searcher.invoke(prompt)
+                            self._smart_searcher_consecutive_failures = 0
+                            break
+                        except BaseException as e:
+                            last_error = e
+                            if self._is_probably_exa_error(e):
+                                if self._is_exa_nonrecoverable_error(e):
+                                    reason = f"nonrecoverable Exa error: {e.__class__.__name__}"
+                                    self._smart_searcher_disabled_reason = reason
+                                    if tool_trace is not None:
+                                        tool_trace_record_value(
+                                            tool_trace,
+                                            key="smart_searcher_disabled_reason",
+                                            value=reason,
+                                        )
+                                    logger.warning(
+                                        "SmartSearcher disabled (%s). Continuing without web search for %s. Error: %s",
+                                        reason,
+                                        question.page_url,
+                                        repr(e)[:300],
+                                    )
+                                else:
+                                    self._smart_searcher_consecutive_failures += 1
+                                    if (
+                                        max_exa_failures > 0
+                                        and self._smart_searcher_consecutive_failures
+                                        >= max_exa_failures
+                                    ):
+                                        reason = (
+                                            f"Exa failures >= {max_exa_failures}"
+                                        )
+                                        self._smart_searcher_disabled_reason = reason
+                                        if tool_trace is not None:
+                                            tool_trace_record_value(
+                                                tool_trace,
+                                                key="smart_searcher_disabled_reason",
+                                                value=reason,
+                                            )
+                                        logger.warning(
+                                            "SmartSearcher disabled (%s) after repeated Exa failures. Continuing without web search for %s. Error: %s",
+                                            reason,
+                                            question.page_url,
+                                            repr(e)[:300],
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "SmartSearcher Exa error for %s (consecutive failures=%s). Continuing without web search for this question. Error: %s",
+                                            question.page_url,
+                                            self._smart_searcher_consecutive_failures,
+                                            repr(e)[:300],
+                                        )
+                                research = fallback_research
+                                break
+                            if not self._is_transient_provider_error(e):
+                                raise
+                            if idx >= len(deduped_models):
+                                raise
+                            logger.warning(
+                                f"SmartSearcher ({question.page_url}): search model '{GeneralLlm.to_model_name(candidate)}' failed; retrying with fallback search model #{idx} '{GeneralLlm.to_model_name(deduped_models[idx])}'. Error: {e}"
+                            )
+                    else:
+                        raise last_error if last_error is not None else RuntimeError(
+                            "SmartSearcher failed without an exception"
+                        )
             else:
                 research = await self._invoke_llm_with_transient_fallback(
                     "researcher", prompt, context=f"Research ({question.page_url})"
