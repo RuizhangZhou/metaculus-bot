@@ -50,7 +50,7 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    timeout-minutes: 70
+    timeout-minutes: 100
     environment: "metaculus bot"
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is

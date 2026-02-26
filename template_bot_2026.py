@@ -264,8 +264,17 @@ class SpringTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
-    _smart_searcher_disabled_reason = None
-    _smart_searcher_consecutive_failures = 0
+    _smart_searcher_disabled_reason: str | None = None
+    _smart_searcher_consecutive_failures: int = 0
+
+    def reset_smart_searcher_circuit_breaker(self) -> None:
+        """
+        Reset SmartSearcher/Exa circuit breaker state.
+
+        Useful when reusing a single bot instance across multiple tournaments.
+        """
+        self._smart_searcher_disabled_reason = None
+        self._smart_searcher_consecutive_failures = 0
 
     def make_llm_dict(self) -> dict[str, str | dict[str, Any] | None]:
         """
@@ -3292,6 +3301,7 @@ class SpringTemplateBot2026(ForecastBot):
                         deduped_models.append(candidate)
 
                     last_error: BaseException | None = None
+                    exa_error: BaseException | None = None
                     for idx, candidate in enumerate(deduped_models, start=1):
                         searcher = SmartSearcher(
                             model=candidate,
@@ -3307,52 +3317,7 @@ class SpringTemplateBot2026(ForecastBot):
                         except BaseException as e:
                             last_error = e
                             if self._is_probably_exa_error(e):
-                                if self._is_exa_nonrecoverable_error(e):
-                                    reason = f"nonrecoverable Exa error: {e.__class__.__name__}"
-                                    self._smart_searcher_disabled_reason = reason
-                                    if tool_trace is not None:
-                                        tool_trace_record_value(
-                                            tool_trace,
-                                            key="smart_searcher_disabled_reason",
-                                            value=reason,
-                                        )
-                                    logger.warning(
-                                        "SmartSearcher disabled (%s). Continuing without web search for %s. Error: %s",
-                                        reason,
-                                        question.page_url,
-                                        repr(e)[:300],
-                                    )
-                                else:
-                                    self._smart_searcher_consecutive_failures += 1
-                                    if (
-                                        max_exa_failures > 0
-                                        and self._smart_searcher_consecutive_failures
-                                        >= max_exa_failures
-                                    ):
-                                        reason = (
-                                            f"Exa failures >= {max_exa_failures}"
-                                        )
-                                        self._smart_searcher_disabled_reason = reason
-                                        if tool_trace is not None:
-                                            tool_trace_record_value(
-                                                tool_trace,
-                                                key="smart_searcher_disabled_reason",
-                                                value=reason,
-                                            )
-                                        logger.warning(
-                                            "SmartSearcher disabled (%s) after repeated Exa failures. Continuing without web search for %s. Error: %s",
-                                            reason,
-                                            question.page_url,
-                                            repr(e)[:300],
-                                        )
-                                    else:
-                                        logger.warning(
-                                            "SmartSearcher Exa error for %s (consecutive failures=%s). Continuing without web search for this question. Error: %s",
-                                            question.page_url,
-                                            self._smart_searcher_consecutive_failures,
-                                            repr(e)[:300],
-                                        )
-                                research = fallback_research
+                                exa_error = e
                                 break
                             if not self._is_transient_provider_error(e):
                                 raise
@@ -3365,6 +3330,53 @@ class SpringTemplateBot2026(ForecastBot):
                         raise last_error if last_error is not None else RuntimeError(
                             "SmartSearcher failed without an exception"
                         )
+                    if exa_error is not None:
+                        if self._is_exa_nonrecoverable_error(exa_error):
+                            reason = (
+                                f"nonrecoverable Exa error: {exa_error.__class__.__name__}"
+                            )
+                            self._smart_searcher_disabled_reason = reason
+                            if tool_trace is not None:
+                                tool_trace_record_value(
+                                    tool_trace,
+                                    key="smart_searcher_disabled_reason",
+                                    value=reason,
+                                )
+                            logger.warning(
+                                "SmartSearcher disabled (%s). Continuing without web search for %s. Error: %s",
+                                reason,
+                                question.page_url,
+                                repr(exa_error)[:300],
+                            )
+                        else:
+                            self._smart_searcher_consecutive_failures += 1
+                            if (
+                                max_exa_failures > 0
+                                and self._smart_searcher_consecutive_failures
+                                >= max_exa_failures
+                            ):
+                                reason = f"Exa failures >= {max_exa_failures}"
+                                self._smart_searcher_disabled_reason = reason
+                                if tool_trace is not None:
+                                    tool_trace_record_value(
+                                        tool_trace,
+                                        key="smart_searcher_disabled_reason",
+                                        value=reason,
+                                    )
+                                logger.warning(
+                                    "SmartSearcher disabled (%s) after repeated Exa failures. Continuing without web search for %s. Error: %s",
+                                    reason,
+                                    question.page_url,
+                                    repr(exa_error)[:300],
+                                )
+                            else:
+                                logger.warning(
+                                    "SmartSearcher Exa error for %s (consecutive failures=%s). Continuing without web search for this question. Error: %s",
+                                    question.page_url,
+                                    self._smart_searcher_consecutive_failures,
+                                    repr(exa_error)[:300],
+                                )
+                        research = fallback_research
             else:
                 research = await self._invoke_llm_with_transient_fallback(
                     "researcher", prompt, context=f"Research ({question.page_url})"
