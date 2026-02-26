@@ -50,7 +50,7 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    timeout-minutes: 100
+    timeout-minutes: 45
     environment: "metaculus bot"
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
@@ -79,7 +79,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
       - name: Install dependencies
-        timeout-minutes: 20
+        timeout-minutes: 15
         run: poetry install --no-interaction --no-root --with web
       - name: Install Playwright Chromium (with deps)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
@@ -87,10 +87,10 @@ jobs:
         run: poetry run playwright install --with-deps chromium
       - name: Ensure Playwright Chromium present
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: poetry run playwright install chromium
       - name: Run bot
-        timeout-minutes: 60
+        timeout-minutes: 40
         run: |
           MANUAL_TOURNAMENT="${{ github.event.inputs.tournament }}"
           RESEARCHER="${{ github.event.inputs.researcher }}"
@@ -108,7 +108,7 @@ jobs:
           export SMART_SEARCHER_NUM_SEARCHES
           export SMART_SEARCHER_NUM_SITES_PER_SEARCH
           export SMART_SEARCHER_USE_ADVANCED_FILTERS
-          TOURNAMENT_TIMEOUT_MINUTES="${BOT_TOURNAMENT_TIMEOUT_MINUTES:-30}"
+          TOURNAMENT_TIMEOUT_MINUTES="${BOT_TOURNAMENT_TIMEOUT_MINUTES:-15}"
 
           # Build tournament list
           # If manual input provided, only run that tournament
