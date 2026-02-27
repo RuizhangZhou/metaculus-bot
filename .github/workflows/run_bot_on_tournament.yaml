@@ -79,18 +79,18 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
       - name: Install dependencies
-        timeout-minutes: 15
+        timeout-minutes: 5
         run: poetry install --no-interaction --no-root --with web
       - name: Install Playwright Chromium (with deps)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 15
+        timeout-minutes: 5
         run: poetry run playwright install --with-deps chromium
       - name: Ensure Playwright Chromium present
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        timeout-minutes: 5
+        timeout-minutes: 2
         run: poetry run playwright install chromium
       - name: Run bot
-        timeout-minutes: 40
+        timeout-minutes: 35
         run: |
           MANUAL_TOURNAMENT="${{ github.event.inputs.tournament }}"
           RESEARCHER="${{ github.event.inputs.researcher }}"
