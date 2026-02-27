@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set "ROOT=C:\Users\zr-admin\source\repos\metaculus\metac-bot-template"
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 set "LOG_DIR=%ROOT%\logs"
 set "LOG_FILE=%LOG_DIR%\market_pulse_daily.log"
 

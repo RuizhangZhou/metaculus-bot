@@ -81,7 +81,7 @@ def _metaculus_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Token {token}",
         "Accept-Language": "en",
-        "User-Agent": "metac-bot-template comment fetcher (https://github.com/Metaculus/metac-bot-template)",
+        "User-Agent": "metaculus-bot comment fetcher",
     }
 
 

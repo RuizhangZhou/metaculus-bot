@@ -18,22 +18,22 @@ sources:
   - api
   notes: Requires BEA_API_KEY. Use tools to fetch NIPA tables (GDP/PCE etc).
 - url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000000000.json
-  title: SEC EDGAR companyfacts (template)
+  title: SEC EDGAR companyfacts (URL pattern)
   tags:
   - sec
   - edgar
   - xbrl
   - financials
   - api
-  notes: Template URL; replace CIK0000000000 with the 10-digit CIK for a company. Requires SEC_USER_AGENT.
+  notes: URL pattern; replace CIK0000000000 with the 10-digit CIK for a company. Requires SEC_USER_AGENT.
 - url: https://data.sec.gov/submissions/CIK0000000000.json
-  title: SEC EDGAR submissions (template)
+  title: SEC EDGAR submissions (URL pattern)
   tags:
   - sec
   - edgar
   - filings
   - api
-  notes: Template URL; replace CIK0000000000 with the 10-digit CIK. Provides recent filing links. Requires SEC_USER_AGENT.
+  notes: URL pattern; replace CIK0000000000 with the 10-digit CIK. Provides recent filing links. Requires SEC_USER_AGENT.
 - url: https://earthquake.usgs.gov/fdsnws/event/1/query
   title: USGS earthquake query API
   tags:

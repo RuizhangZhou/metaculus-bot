@@ -113,13 +113,14 @@ def _extract_probability_percent(text: str) -> float | None:
     return value
 
 
-class SpringTemplateBot2026(
+class MetaculusBot(
     LocalCrawlSupportMixin, ToolRouterMixin, SmartSearcherCircuitMixin, ForecastBot
 ):
     """
-    This is the template bot for Spring 2026 Metaculus AI Tournament.
-    This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
-    This template is given as-is, and is use-at-your-own-risk.
+    This is the main forecasting bot used by this repository.
+
+    It started from Metaculus's reference bot implementation and has been adapted
+    for local development and GitHub Actions runs.
     We have covered most test cases in forecasting-tools it may be worth double checking key components locally.
     So far our track record has been 1 mentionable bug per season (affecting forecasts for 1-2% of total questions)
 
@@ -1312,13 +1313,14 @@ class SpringTemplateBot2026(
         else:
             repo_url = cls._to_https_repo_url(cls._git_remote_url("origin") or "")
 
+        base = "metaculus-bot"
         if contact_email and repo_url:
-            return f"metac-bot-template (contact: {contact_email}; +{repo_url})"
+            return f"{base} (contact: {contact_email}; +{repo_url})"
         if contact_email:
-            return f"metac-bot-template (contact: {contact_email})"
+            return f"{base} (contact: {contact_email})"
         if repo_url:
-            return f"metac-bot-template (+{repo_url})"
-        return "metac-bot-template"
+            return f"{base} (+{repo_url})"
+        return base
 
     @classmethod
     def _sec_user_agent(cls) -> str:
@@ -3764,7 +3766,7 @@ def _matrix_send_message(message: str) -> None:
 
 async def _run_digest(
     *,
-    template_bot: SpringTemplateBot2026,
+    bot: "MetaculusBot",
     tournaments: list[str],
     state_path: Path,
     out_dir: Path,
@@ -3797,7 +3799,7 @@ async def _run_digest(
 
     for tournament_id in tournaments:
         try:
-            reports_or_errors = await template_bot.forecast_on_tournament(
+            reports_or_errors = await bot.forecast_on_tournament(
                 tournament_id, return_exceptions=True
             )
         except Exception as e:
@@ -3973,7 +3975,7 @@ if __name__ == "__main__":
     litellm_logger.propagate = False
 
     parser = argparse.ArgumentParser(
-        description="Run the TemplateBot forecasting system"
+        description="Run the forecasting bot"
     )
     parser.add_argument(
         "--mode",
@@ -4004,7 +4006,7 @@ if __name__ == "__main__":
     ], "Invalid run mode"
 
     publish_to_metaculus = run_mode in {"tournament", "metaculus_cup", "test_questions"}
-    template_bot = SpringTemplateBot2026(
+    bot = MetaculusBot(
         research_reports_per_question=1,
         predictions_per_research_report=5,
         use_research_summary_to_forecast=False,
@@ -4039,7 +4041,7 @@ if __name__ == "__main__":
             for tournament_id in tournaments:
                 forecast_reports.extend(
                     asyncio.run(
-                        template_bot.forecast_on_tournament(
+                        bot.forecast_on_tournament(
                             tournament_id, return_exceptions=True
                         )
                     )
@@ -4047,12 +4049,12 @@ if __name__ == "__main__":
         else:
             # You may want to change this to the specific tournament ID you want to forecast on
             seasonal_tournament_reports = asyncio.run(
-                template_bot.forecast_on_tournament(
+                bot.forecast_on_tournament(
                     client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
                 )
             )
             minibench_reports = asyncio.run(
-                template_bot.forecast_on_tournament(
+                bot.forecast_on_tournament(
                     client.CURRENT_MINIBENCH_ID, return_exceptions=True
                 )
             )
@@ -4060,9 +4062,9 @@ if __name__ == "__main__":
     elif run_mode == "metaculus_cup":
         # The Metaculus cup is a good way to test the bot's performance on regularly open questions. You can also use AXC_2025_TOURNAMENT_ID = 32564 or AI_2027_TOURNAMENT_ID = "ai-2027"
         # The Metaculus cup may not be initialized near the beginning of a season (i.e. January, May, September)
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
+            bot.forecast_on_tournament(
                 client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
             )
         )
@@ -4074,13 +4076,13 @@ if __name__ == "__main__":
             "https://www.metaculus.com/questions/22427/number-of-new-leading-ai-labs/",  # Number of New Leading AI Labs - Multiple Choice
             "https://www.metaculus.com/c/diffusion-community/38880/how-many-us-labor-strikes-due-to-ai-in-2029/",  # Number of US Labor Strikes Due to AI in 2029 - Discrete
         ]
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         questions = [
             client.get_question_by_url(question_url)
             for question_url in EXAMPLE_QUESTIONS
         ]
         forecast_reports = asyncio.run(
-            template_bot.forecast_questions(questions, return_exceptions=True)
+            bot.forecast_questions(questions, return_exceptions=True)
         )
     elif run_mode == "digest":
         tournaments, unsupported = _load_tournament_identifiers(
@@ -4093,17 +4095,17 @@ if __name__ == "__main__":
                 "No tournaments configured. Add tournament URLs/slugs to tracked_tournaments.txt or pass --tournament."
             )
 
-        template_bot.publish_reports_to_metaculus = False
-        template_bot.skip_previously_forecasted_questions = False
+        bot.publish_reports_to_metaculus = False
+        bot.skip_previously_forecasted_questions = False
         state_path = Path(".state") / "digest_state.json"
         out_dir = Path("reports") / "digest"
         asyncio.run(
             _run_digest(
-                template_bot=template_bot,
+                bot=bot,
                 tournaments=tournaments,
                 state_path=state_path,
                 out_dir=out_dir,
             )
         )
         forecast_reports = []
-    template_bot.log_report_summary(forecast_reports)
+    bot.log_report_summary(forecast_reports)

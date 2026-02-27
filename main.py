@@ -19,7 +19,7 @@ from digest_mode import (
 from tournament_update import select_questions_for_tournament_update
 from forecasting_tools import GeneralLlm, MetaculusClient
 
-from template_bot_2026 import SpringTemplateBot2026
+from metaculus_bot import MetaculusBot
 from retrospective_mode import run_retrospective
 from weekly_retrospective_mode import run_weekly_retrospective
 
@@ -148,9 +148,7 @@ if __name__ == "__main__":
     litellm_logger.setLevel(logging.WARNING)
     litellm_logger.propagate = False
 
-    parser = argparse.ArgumentParser(
-        description="Run the TemplateBot forecasting system"
-    )
+    parser = argparse.ArgumentParser(description="Run the Metaculus forecasting bot")
     parser.add_argument(
         "--mode",
         type=str,
@@ -313,7 +311,10 @@ if __name__ == "__main__":
 
             minibench_id = extract_tournament_identifier(client.CURRENT_MINIBENCH_ID)
 
-            cup_raw = os.getenv("METACULUS_CUP_TOURNAMENT", "").strip() or "metaculus-cup-spring-2026"
+            cup_raw = (
+                os.getenv("METACULUS_CUP_TOURNAMENT", "").strip()
+                or client.CURRENT_METACULUS_CUP_ID
+            )
             cup_id = extract_tournament_identifier(cup_raw)
 
             tournaments = [
@@ -344,12 +345,12 @@ if __name__ == "__main__":
 
     llms: dict[str, object] | None = None
     if args.researcher or args.default_model or args.parser_model:
-        # Start from the template bot defaults so partial CLI overrides (e.g.
+        # Start from the bot defaults so partial CLI overrides (e.g.
         # `--researcher ...`) don't accidentally drop required LLM config and
         # fall back to forecasting-tools' built-in defaults.
         llms = {
             k: v
-            for k, v in SpringTemplateBot2026._llm_config_defaults().items()
+            for k, v in MetaculusBot._llm_config_defaults().items()
             if v is not None
         }
     if args.researcher and llms is not None:
@@ -399,7 +400,7 @@ if __name__ == "__main__":
         if args.researcher.strip().lower() == "no_research":
             enable_summarize_research = False
 
-    template_bot = SpringTemplateBot2026(
+    bot = MetaculusBot(
         research_reports_per_question=research_reports_per_question,
         predictions_per_research_report=predictions_per_research_report,
         use_research_summary_to_forecast=False,
@@ -432,7 +433,7 @@ if __name__ == "__main__":
                     try:
                         forecast_reports.extend(
                             asyncio.run(
-                                template_bot.forecast_on_tournament(
+                                bot.forecast_on_tournament(
                                     tournament_id, return_exceptions=True
                                 )
                             )
@@ -441,22 +442,22 @@ if __name__ == "__main__":
                         logging.getLogger(__name__).error(
                             f"Failed to forecast on tournament '{tournament_id}': {e}"
                         )
-                        forecast_reports.append(e)
+                forecast_reports.append(e)
             else:
                 seasonal_tournament_reports = asyncio.run(
-                    template_bot.forecast_on_tournament(
+                    bot.forecast_on_tournament(
                         client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
                     )
                 )
                 minibench_reports = asyncio.run(
-                    template_bot.forecast_on_tournament(
+                    bot.forecast_on_tournament(
                         client.CURRENT_MINIBENCH_ID, return_exceptions=True
                     )
                 )
                 forecast_reports = seasonal_tournament_reports + minibench_reports
 
         elif run_mode == "tournament_update":
-            template_bot.skip_previously_forecasted_questions = False
+            bot.skip_previously_forecasted_questions = False
 
             if args.tournaments_file or args.tournament:
                 tournaments, unsupported = load_tournament_identifiers(
@@ -499,14 +500,14 @@ if __name__ == "__main__":
                     continue
                 forecast_reports.extend(
                     asyncio.run(
-                        template_bot.forecast_questions(
+                        bot.forecast_questions(
                             questions_to_forecast, return_exceptions=True
                         )
                     )
                 )
 
         elif run_mode == "metaculus_cup":
-            template_bot.skip_previously_forecasted_questions = False
+            bot.skip_previously_forecasted_questions = False
             cup_override_raw = os.getenv("METACULUS_CUP_TOURNAMENT", "").strip()
             cup_override = (
                 extract_tournament_identifier(cup_override_raw)
@@ -519,9 +520,9 @@ if __name__ == "__main__":
                 )
                 cup_override = None
 
-            metaculus_cup_id = cup_override or "metaculus-cup-spring-2026"
+            metaculus_cup_id = cup_override or client.CURRENT_METACULUS_CUP_ID
             forecast_reports = asyncio.run(
-                template_bot.forecast_on_tournament(
+                bot.forecast_on_tournament(
                     metaculus_cup_id, return_exceptions=True
                 )
             )
@@ -536,13 +537,13 @@ if __name__ == "__main__":
             ]
             test_count = _env_int("BOT_TEST_QUESTION_COUNT", 1)
             EXAMPLE_QUESTIONS = ALL_EXAMPLE_QUESTIONS[:test_count]
-            template_bot.skip_previously_forecasted_questions = False
+            bot.skip_previously_forecasted_questions = False
             questions = [
                 client.get_question_by_url(question_url)
                 for question_url in EXAMPLE_QUESTIONS
             ]
             forecast_reports = asyncio.run(
-                template_bot.forecast_questions(questions, return_exceptions=True)
+                bot.forecast_questions(questions, return_exceptions=True)
             )
 
         elif run_mode == "digest":
@@ -559,13 +560,13 @@ if __name__ == "__main__":
                     "No tournaments configured. Add URLs/slugs to tracked_tournaments.txt or pass --tournament."
                 )
 
-            template_bot.publish_reports_to_metaculus = False
-            template_bot.skip_previously_forecasted_questions = False
+            bot.publish_reports_to_metaculus = False
+            bot.skip_previously_forecasted_questions = False
             state_path = Path(".state") / "digest_state.json"
             out_dir = Path("reports") / "digest"
             asyncio.run(
                 run_digest(
-                    template_bot=template_bot,
+                    bot=bot,
                     tournaments=tournaments,
                     state_path=state_path,
                     out_dir=out_dir,
@@ -585,7 +586,7 @@ if __name__ == "__main__":
 
     fail_on_errors = _env_bool("BOT_FAIL_ON_ERRORS", run_mode == "test_questions")
     try:
-        template_bot.log_report_summary(  # type: ignore[arg-type]
+        bot.log_report_summary(  # type: ignore[arg-type]
             forecast_reports, raise_errors=fail_on_errors
         )
     finally:

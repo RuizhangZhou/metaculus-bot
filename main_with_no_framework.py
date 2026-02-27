@@ -23,12 +23,12 @@ This file provides a simple forecasting bot built from the ground up.
 We provide this for people who want to dissect
 it to build their own bot without using forecasting-tools.
 
-This template assumes you are using a OpenAI model and have an OpenAI API key
-You will also need a Metaculus API key, for posting questions to Metaculus
-and a Perplexity or AskNews API key for online research
+This example assumes you are using an OpenAI-compatible model and have an OpenAI API key.
+You will also need a Metaculus API key for posting questions to Metaculus,
+and a Perplexity or AskNews API key for online research.
 
-This is not a representative of the template bots used by Metaculus, as there are some
-differences in implementation. The actual template bot (e.g. like main.py) has the following differences:
+This is not representative of the bots used by Metaculus; there are some
+differences in implementation. The main bot (e.g. `main.py`) has the following differences:
 - An LLM now parses the final forecast output (rather than programmatic parsing)
 - Support for nominal bounds was added (i.e. when there are discrete questions and normal upper/lower bounds are not as intuitive)
 - Upper/Lower bounds are mentioned as suggestions (not ignored) when the bounds are open
@@ -70,7 +70,7 @@ OPENAI_API_KEY = os.getenv(
 Q4_2024_AI_BENCHMARKING_ID = 32506
 Q1_2025_AI_BENCHMARKING_ID = 32627
 FALL_2025_AI_BENCHMARKING_ID = "fall-aib-2025"
-SPRING_2026_AI_BENCHMARKING_ID = "spring-aib-2026"
+AI_BENCHMARKING_TOURNAMENT_ID = "spring-aib-2026"
 CURRENT_MINIBENCH_ID = "minibench"
 
 Q4_2024_QUARTERLY_CUP_ID = 3672

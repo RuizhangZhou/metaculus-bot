@@ -29,7 +29,7 @@ def _metaculus_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Token {token}",
         "Accept-Language": "en",
-        "User-Agent": "metac-bot-template redact comments (local)",
+        "User-Agent": "metaculus-bot redact comments (local)",
     }
 
 
