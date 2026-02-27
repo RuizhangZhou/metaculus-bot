@@ -22,15 +22,12 @@ from typing import Literal
 from typing import TypeVar
 from typing import Sequence
 
-import requests
-from pydantic import BaseModel
+from bot.env import env_bool as _env_bool, env_float as _env_float, env_int as _env_int
+from bot.local_crawl_support import LocalCrawlSupportMixin
+from bot.smart_searcher_circuit import SmartSearcherCircuitMixin
+from bot.tool_router import ToolRouterMixin, ToolRouterPlan
 
-from local_web_crawl import (
-    LocalCrawlLimits,
-    PlaywrightWebPageParser,
-    crawl_urls,
-    extract_http_urls,
-)
+import requests
 
 from tool_trace import (
     ensure_tool_trace_base,
@@ -57,12 +54,6 @@ from official_structured_sources import (
     prefetch_noaa_nhc,
     prefetch_usgs_earthquakes,
     truncate_text as truncate_official_text,
-)
-
-from source_catalog import (
-    load_catalog as load_source_catalog,
-    render_sources_markdown as render_source_catalog_markdown,
-    suggest_sources_for_question as suggest_source_catalog_sources,
 )
 
 from forecasting_tools import (
@@ -94,25 +85,7 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
-_NOTEPAD_LOCAL_CRAWL_TASK_KEY = "local_crawl_context_task"
-_NOTEPAD_TOOL_ROUTER_PLAN_KEY = "tool_router_plan"
 _NOTEPAD_TOOL_TRACE_KEY = "tool_trace"
-
-
-class ToolRouterPlan(BaseModel):
-    use_web_search: bool
-    fetch_sec_filings: bool
-    fetch_sec_revenue: bool
-    fetch_nasdaq_eps: bool
-    fetch_fred: bool
-    fetch_bls: bool
-    fetch_bea: bool
-    fetch_eia: bool
-    fetch_federal_register: bool
-    fetch_noaa_nhc: bool
-    fetch_usgs_earthquakes: bool
-    notes: str | None = None
-
 
 _RESEARCH_FORECAST_LINE_RE = re.compile(
     r"^\s*Probability\s*:\s*\d{1,3}(?:\.\d+)?\s*%\s*$", re.IGNORECASE
@@ -140,52 +113,14 @@ def _extract_probability_percent(text: str) -> float | None:
     return value
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    raw = raw.strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(f"Ignoring invalid integer for {name}: {raw!r}")
-        return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "y", "on"}:
-        return True
-    if value in {"0", "false", "no", "n", "off"}:
-        return False
-    logger.warning(f"Ignoring invalid boolean for {name}: {raw!r}")
-    return default
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    raw = raw.strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning(f"Ignoring invalid float for {name}: {raw!r}")
-        return default
-
-
-class SpringTemplateBot2026(ForecastBot):
+class MetaculusBot(
+    LocalCrawlSupportMixin, ToolRouterMixin, SmartSearcherCircuitMixin, ForecastBot
+):
     """
-    This is the template bot for Spring 2026 Metaculus AI Tournament.
-    This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
-    This template is given as-is, and is use-at-your-own-risk.
+    This is the main forecasting bot used by this repository.
+
+    It started from Metaculus's reference bot implementation and has been adapted
+    for local development and GitHub Actions runs.
     We have covered most test cases in forecasting-tools it may be worth double checking key components locally.
     So far our track record has been 1 mentionable bug per season (affecting forecasts for 1-2% of total questions)
 
@@ -267,15 +202,6 @@ class SpringTemplateBot2026(ForecastBot):
     _smart_searcher_disabled_reason: str | None = None
     _smart_searcher_consecutive_failures: int = 0
 
-    def reset_smart_searcher_circuit_breaker(self) -> None:
-        """
-        Reset SmartSearcher/Exa circuit breaker state.
-
-        Useful when reusing a single bot instance across multiple tournaments.
-        """
-        self._smart_searcher_disabled_reason = None
-        self._smart_searcher_consecutive_failures = 0
-
     def make_llm_dict(self) -> dict[str, str | dict[str, Any] | None]:
         """
         Only expose model names in Metaculus comments/logs when
@@ -331,30 +257,6 @@ class SpringTemplateBot2026(ForecastBot):
         return False
 
     @staticmethod
-    def _is_probably_exa_error(error: BaseException) -> bool:
-        error_text = str(error).lower()
-        if "api.exa.ai" in error_text or "exa.ai" in error_text:
-            return True
-        if "exa_api_key" in error_text or "exasearcher" in error_text:
-            return True
-        if isinstance(error, asyncio.TimeoutError) and "30 seconds" in error_text:
-            return True
-        return False
-
-    @staticmethod
-    def _is_exa_nonrecoverable_error(error: BaseException) -> bool:
-        error_text = str(error).lower()
-        if "exa_api_key" in error_text and ("not set" in error_text or "missing" in error_text):
-            return True
-        if "invalid api key" in error_text or "unauthorized" in error_text or " 401" in error_text:
-            return True
-        if "payment required" in error_text or "insufficient credits" in error_text or " 402" in error_text:
-            return True
-        if "forbidden" in error_text or " 403" in error_text:
-            return True
-        return False
-
-    @staticmethod
     def _parse_ssl_verify_env(name: str) -> bool | str | None:
         """
         Parse an ssl_verify-style env var.
@@ -395,477 +297,6 @@ class SpringTemplateBot2026(ForecastBot):
         r"\b(uncertain|unknown|unclear|hard to|difficult|maybe|might|could|speculat|not sure|no clear)\b",
         re.IGNORECASE,
     )
-
-    _local_crawl_parser: PlaywrightWebPageParser | None = None
-    _local_crawl_limits: LocalCrawlLimits | None = None
-
-    def _local_crawl_enabled(self) -> bool:
-        return _env_bool("BOT_ENABLE_LOCAL_QUESTION_CRAWL", False)
-
-    def _build_local_crawl_limits_from_env(self) -> LocalCrawlLimits:
-        blocked_raw = os.getenv(
-            "BOT_LOCAL_CRAWL_BLOCKED_RESOURCE_TYPES", "image,font,media"
-        )
-        blocked = frozenset(
-            {
-                part.strip().lower()
-                for part in blocked_raw.split(",")
-                if part.strip()
-            }
-        )
-        return LocalCrawlLimits(
-            max_urls=_env_int("BOT_LOCAL_CRAWL_MAX_URLS", 8),
-            max_concurrency=_env_int("BOT_LOCAL_CRAWL_MAX_CONCURRENCY", 2),
-            navigation_timeout_seconds=_env_int(
-                "BOT_LOCAL_CRAWL_NAV_TIMEOUT_SECONDS", 30
-            ),
-            network_idle_timeout_seconds=_env_int(
-                "BOT_LOCAL_CRAWL_NETWORK_IDLE_TIMEOUT_SECONDS", 5
-            ),
-            total_char_budget=_env_int("BOT_LOCAL_CRAWL_TOTAL_CHAR_BUDGET", 20_000),
-            per_url_char_budget=_env_int(
-                "BOT_LOCAL_CRAWL_PER_URL_CHAR_BUDGET", 4_000
-            ),
-            truncation_marker=os.getenv(
-                "BOT_LOCAL_CRAWL_TRUNCATION_MARKER", "\n\n[TRUNCATED]"
-            ),
-            blocked_resource_types=blocked or frozenset(),
-            allow_private_hosts=_env_bool(
-                "BOT_LOCAL_CRAWL_ALLOW_PRIVATE_HOSTS", False
-            ),
-            ignore_https_errors=_env_bool(
-                "BOT_LOCAL_CRAWL_IGNORE_HTTPS_ERRORS", False
-            ),
-            resolve_dns=_env_bool("BOT_LOCAL_CRAWL_RESOLVE_DNS", True),
-        )
-
-    async def forecast_questions(
-        self,
-        questions: Sequence[MetaculusQuestion],
-        return_exceptions: bool = False,
-    ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
-        if not self._local_crawl_enabled():
-            return await super().forecast_questions(questions, return_exceptions)
-
-        limits = self._build_local_crawl_limits_from_env()
-        user_agent = os.getenv("BOT_LOCAL_CRAWL_USER_AGENT", "").strip() or None
-
-        self._local_crawl_limits = limits
-        self._local_crawl_parser = PlaywrightWebPageParser(
-            limits=limits,
-            user_agent=user_agent,
-        )
-        try:
-            return await super().forecast_questions(questions, return_exceptions)
-        finally:
-            try:
-                await self._local_crawl_parser.close()
-            finally:
-                self._local_crawl_parser = None
-                self._local_crawl_limits = None
-
-    async def _get_local_crawl_context(self, question: MetaculusQuestion) -> str:
-        if not self._local_crawl_enabled():
-            return ""
-        if self._local_crawl_parser is None or self._local_crawl_limits is None:
-            return ""
-
-        include_question_page = _env_bool(
-            "BOT_LOCAL_CRAWL_INCLUDE_QUESTION_PAGE", True
-        )
-
-        urls: list[str] = []
-        if include_question_page and getattr(question, "page_url", None):
-            urls.append(str(question.page_url))
-
-        urls.extend(extract_http_urls(question.question_text or ""))
-        urls.extend(extract_http_urls(question.background_info or ""))
-        urls.extend(extract_http_urls(question.resolution_criteria or ""))
-        urls.extend(extract_http_urls(question.fine_print or ""))
-
-        # If there is remaining crawl capacity, augment with a small number of curated catalog URLs.
-        try:
-            _, catalog_urls = self._get_source_catalog_suggestions(question=question)
-            max_extra = max(0, int(self._source_catalog_crawl_max_urls()))
-            if max_extra > 0 and catalog_urls:
-                urls.extend(list(catalog_urls)[:max_extra])
-        except Exception:
-            pass
-
-        try:
-            return await crawl_urls(
-                parser=self._local_crawl_parser,
-                urls=urls,
-                limits=self._local_crawl_limits,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            if isinstance(e, RuntimeError) and "Playwright is not installed" in str(e):
-                logger.warning(str(e))
-                return ""
-            logger.info(
-                f"Local crawl failed for question {question.page_url}: {e}"
-            )
-            return ""
-
-    async def _get_local_crawl_context_cached(
-        self, question: MetaculusQuestion
-    ) -> str:
-        if not self._local_crawl_enabled():
-            return ""
-
-        try:
-            notepad = await self._get_notepad(question)
-        except Exception:
-            return await self._get_local_crawl_context(question)
-
-        existing = notepad.note_entries.get(_NOTEPAD_LOCAL_CRAWL_TASK_KEY)
-        if isinstance(existing, str):
-            return existing
-        if isinstance(existing, asyncio.Task):
-            try:
-                return await existing
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Local crawl cached task failed", exc_info=True)
-                notepad.note_entries[_NOTEPAD_LOCAL_CRAWL_TASK_KEY] = ""
-                return ""
-
-        task = asyncio.create_task(self._get_local_crawl_context(question))
-        notepad.note_entries[_NOTEPAD_LOCAL_CRAWL_TASK_KEY] = task
-        try:
-            result = await task
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("Local crawl task failed", exc_info=True)
-            result = ""
-
-        notepad.note_entries[_NOTEPAD_LOCAL_CRAWL_TASK_KEY] = result
-        return result
-
-    @staticmethod
-    def _tool_router_enabled() -> bool:
-        return _env_bool("BOT_ENABLE_TOOL_ROUTER", True)
-
-    @staticmethod
-    def _tool_trace_enabled() -> bool:
-        return _env_bool("BOT_ENABLE_TOOL_TRACE", True)
-
-    @staticmethod
-    def _tool_trace_max_urls() -> int:
-        return _env_int("BOT_TOOL_TRACE_MAX_URLS", 25)
-
-    @staticmethod
-    def _tool_trace_max_chars() -> int:
-        return _env_int("BOT_TOOL_TRACE_MAX_CHARS", 8000)
-
-    @staticmethod
-    def _source_catalog_enabled() -> bool:
-        return _env_bool("BOT_ENABLE_SOURCE_CATALOG", True)
-
-    @staticmethod
-    def _source_catalog_max_items() -> int:
-        return _env_int("BOT_SOURCE_CATALOG_MAX_ITEMS", 15)
-
-    @staticmethod
-    def _source_catalog_max_chars() -> int:
-        return _env_int("BOT_SOURCE_CATALOG_MAX_CHARS", 2500)
-
-    @staticmethod
-    def _source_catalog_crawl_max_urls() -> int:
-        return _env_int("BOT_SOURCE_CATALOG_CRAWL_MAX_URLS", 2)
-
-    def _source_catalog_query_text(self, question: MetaculusQuestion) -> str:
-        parts = [
-            getattr(question, "question_text", "") or "",
-            getattr(question, "background_info", "") or "",
-            getattr(question, "resolution_criteria", "") or "",
-            getattr(question, "fine_print", "") or "",
-        ]
-        return "\n".join([str(p) for p in parts if isinstance(p, str) and p.strip()]).strip()
-
-    def _get_source_catalog_suggestions(
-        self, *, question: MetaculusQuestion
-    ) -> tuple[str, list[str]]:
-        if not self._source_catalog_enabled():
-            return "", []
-        max_items = max(0, int(self._source_catalog_max_items()))
-        if max_items <= 0:
-            return "", []
-
-        catalog_path = Path(__file__).with_name("source_catalog.yaml")
-        try:
-            text = catalog_path.read_text(encoding="utf-8")
-        except Exception:
-            return "", []
-
-        catalog = load_source_catalog(text)
-        query_text = self._source_catalog_query_text(question)
-        suggested = suggest_source_catalog_sources(
-            catalog, query_text=query_text, max_items=max_items
-        )
-        suggested_urls = [
-            str(e.get("url")).strip()
-            for e in suggested
-            if isinstance(e, dict) and isinstance(e.get("url"), str) and str(e.get("url")).strip()
-        ]
-
-        max_chars = max(0, int(self._source_catalog_max_chars()))
-        if max_chars <= 0:
-            return "", suggested_urls
-        rendered_text, rendered_urls = render_source_catalog_markdown(
-            suggested, max_chars=max_chars
-        )
-        return rendered_text, rendered_urls or suggested_urls
-
-    @staticmethod
-    def _truncate_for_router(text: str, max_chars: int) -> str:
-        text = (text or "").strip()
-        if max_chars <= 0 or not text:
-            return ""
-        if len(text) <= max_chars:
-            return text
-        marker = "\n\n[TRUNCATED]"
-        if len(marker) >= max_chars:
-            return marker[:max_chars]
-        return text[: max_chars - len(marker)] + marker
-
-    def _default_tool_router_plan(self, *, question: MetaculusQuestion) -> ToolRouterPlan:
-        ticker = self._infer_ticker_symbol(question)
-        has_ticker = bool(ticker)
-        looks_eps = self._looks_like_eps_question(question)
-        looks_revenue = self._looks_like_revenue_question(question)
-        return ToolRouterPlan(
-            use_web_search=_env_bool("BOT_ENABLE_WEB_SEARCH", True),
-            fetch_sec_filings=has_ticker
-            and _env_bool("BOT_ENABLE_FREE_SEC_FILINGS_PREFETCH", True),
-            fetch_sec_revenue=has_ticker
-            and looks_revenue
-            and _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True),
-            fetch_nasdaq_eps=has_ticker
-            and looks_eps
-            and _env_bool("BOT_ENABLE_FREE_EPS_PREFETCH", True),
-            fetch_fred=False,
-            fetch_bls=False,
-            fetch_bea=False,
-            fetch_eia=False,
-            fetch_federal_register=False,
-            fetch_noaa_nhc=False,
-            fetch_usgs_earthquakes=False,
-            notes="fallback-default",
-        )
-
-    def _normalize_tool_router_plan(
-        self, *, plan: ToolRouterPlan, question: MetaculusQuestion, inferred_ticker: str
-    ) -> ToolRouterPlan:
-        ticker = (inferred_ticker or "").strip().upper()
-        has_ticker = bool(ticker)
-        looks_eps = self._looks_like_eps_question(question)
-        looks_revenue = self._looks_like_revenue_question(question)
-
-        fetch_sec_filings = bool(
-            plan.fetch_sec_filings
-            and has_ticker
-            and _env_bool("BOT_ENABLE_FREE_SEC_FILINGS_PREFETCH", True)
-        )
-        fetch_sec_revenue = bool(
-            plan.fetch_sec_revenue
-            and has_ticker
-            and looks_revenue
-            and _env_bool("BOT_ENABLE_FREE_REVENUE_PREFETCH", True)
-        )
-        fetch_nasdaq_eps = bool(
-            plan.fetch_nasdaq_eps
-            and has_ticker
-            and looks_eps
-            and _env_bool("BOT_ENABLE_FREE_EPS_PREFETCH", True)
-        )
-
-        has_fred_key = bool(os.getenv("FRED_API_KEY", "").strip())
-        has_bea_key = bool(os.getenv("BEA_API_KEY", "").strip())
-        has_eia_key = bool(os.getenv("EIA_API_KEY", "").strip())
-
-        fetch_fred = bool(
-            plan.fetch_fred
-            and has_fred_key
-            and _env_bool("BOT_ENABLE_FREE_FRED_PREFETCH", True)
-        )
-        fetch_bls = bool(plan.fetch_bls and _env_bool("BOT_ENABLE_FREE_BLS_PREFETCH", True))
-        fetch_bea = bool(
-            plan.fetch_bea
-            and has_bea_key
-            and _env_bool("BOT_ENABLE_FREE_BEA_PREFETCH", True)
-        )
-        fetch_eia = bool(
-            plan.fetch_eia
-            and has_eia_key
-            and _env_bool("BOT_ENABLE_FREE_EIA_PREFETCH", True)
-        )
-        fetch_federal_register = bool(
-            plan.fetch_federal_register
-            and _env_bool("BOT_ENABLE_FREE_FEDERAL_REGISTER_PREFETCH", True)
-        )
-        fetch_noaa_nhc = bool(
-            plan.fetch_noaa_nhc and _env_bool("BOT_ENABLE_FREE_NOAA_NHC_PREFETCH", True)
-        )
-        fetch_usgs_earthquakes = bool(
-            plan.fetch_usgs_earthquakes
-            and _env_bool("BOT_ENABLE_FREE_USGS_EARTHQUAKES_PREFETCH", True)
-        )
-
-        use_web_search = bool(plan.use_web_search and _env_bool("BOT_ENABLE_WEB_SEARCH", True))
-
-        return ToolRouterPlan(
-            use_web_search=use_web_search,
-            fetch_sec_filings=fetch_sec_filings,
-            fetch_sec_revenue=fetch_sec_revenue,
-            fetch_nasdaq_eps=fetch_nasdaq_eps,
-            fetch_fred=fetch_fred,
-            fetch_bls=fetch_bls,
-            fetch_bea=fetch_bea,
-            fetch_eia=fetch_eia,
-            fetch_federal_register=fetch_federal_register,
-            fetch_noaa_nhc=fetch_noaa_nhc,
-            fetch_usgs_earthquakes=fetch_usgs_earthquakes,
-            notes=(plan.notes or "").strip() or None,
-        )
-
-    async def _get_tool_router_plan(
-        self, *, question: MetaculusQuestion, local_crawl_context: str
-    ) -> ToolRouterPlan:
-        inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
-        looks_eps = self._looks_like_eps_question(question)
-        looks_revenue = self._looks_like_revenue_question(question)
-
-        llm = self.get_llm("parser", "llm")
-        schema = llm.get_schema_format_instructions_for_pydantic_type(ToolRouterPlan)
-
-        max_local_chars = _env_int("BOT_TOOL_ROUTER_LOCAL_CONTEXT_MAX_CHARS", 6000)
-        local_excerpt = self._truncate_for_router(local_crawl_context, max_local_chars)
-
-        catalog_text, _ = self._get_source_catalog_suggestions(question=question)
-        source_catalog_block = (
-            clean_indents(
-                f"""
-                Reusable source catalog (curated suggestions; may be empty):
-                {catalog_text}
-                """
-            )
-            if catalog_text
-            else ""
-        )
-
-        prompt = clean_indents(
-            f"""
-            You are a tool-router for a forecasting research assistant.
-
-            Goal: decide which retrieval sources to use for THIS Metaculus question, before writing the research report.
-            Cost priority (cheapest/most reliable first):
-            1) Local crawl extracts (already available; do not request again).
-            2) Free official deterministic sources (SEC/Nasdaq/FRED/BLS/BEA/EIA/Federal Register/NOAA/USGS) when relevant.
-            3) Web search (SmartSearcher/Exa or browsing models) only if needed.
-
-            Rules:
-            - Prefer to AVOID web search if local extracts + official sources are sufficient to answer the resolution criteria.
-            - Only request SEC/Nasdaq tools if a valid US public-company ticker is available.
-            - Prefer official sources when the resolution criteria references an agency or official publication
-              (e.g., SEC filings, Federal Register rules, NOAA/NHC advisories, USGS feeds).
-            - If the question asks for the latest status of an event (e.g., law passed, conflict outcome, election result),
-              web search is usually required unless the local extracts already contain up-to-date primary sources.
-            - Return ONLY the final JSON object, no other text.
-
-            Output schema:
-            {schema}
-
-            Tool meanings:
-            - fetch_sec_filings: get recent SEC 10-K/10-Q/8-K links (submissions endpoint).
-            - fetch_sec_revenue: get recent quarterly revenue series (companyfacts endpoint).
-            - fetch_nasdaq_eps: get analyst consensus EPS forecast (Nasdaq analyst API).
-            - fetch_fred: query FRED (macro/finance time series; requires FRED_API_KEY).
-            - fetch_bls: query BLS time series (CPI/unemployment/jobs).
-            - fetch_bea: query BEA API (GDP/PCE; requires BEA_API_KEY).
-            - fetch_eia: query EIA API (energy/oil; requires EIA_API_KEY).
-            - fetch_federal_register: search Federal Register documents (rules/notices; no key).
-            - fetch_noaa_nhc: fetch NOAA NHC tropical outlook RSS (no key).
-            - fetch_usgs_earthquakes: fetch USGS earthquake feed (no key).
-            - use_web_search: run SmartSearcher/Exa or a browsing model to find missing info.
-
-            Inputs:
-            - Today: {datetime.now().strftime("%Y-%m-%d")}
-            - Inferred ticker (may be empty): {inferred_ticker}
-            - Heuristics: looks_like_eps={looks_eps}, looks_like_revenue={looks_revenue}
-
-            Question text:
-            {question.question_text}
-
-            Background info:
-            {question.background_info or ""}
-
-            Resolution criteria:
-            {question.resolution_criteria or ""}
-
-            Fine print:
-            {question.fine_print or ""}
-
-            Local crawl extracts (truncated):
-            {local_excerpt}
-
-            {source_catalog_block}
-            """
-        )
-
-        plan = await llm.invoke_and_return_verified_type(prompt, ToolRouterPlan)
-        return self._normalize_tool_router_plan(
-            plan=plan, question=question, inferred_ticker=inferred_ticker
-        )
-
-    async def _get_tool_router_plan_cached(
-        self, *, question: MetaculusQuestion, local_crawl_context: str
-    ) -> ToolRouterPlan:
-        if not self._tool_router_enabled():
-            return self._default_tool_router_plan(question=question)
-
-        try:
-            notepad = await self._get_notepad(question)
-        except Exception:
-            return await self._get_tool_router_plan(
-                question=question, local_crawl_context=local_crawl_context
-            )
-
-        existing = notepad.note_entries.get(_NOTEPAD_TOOL_ROUTER_PLAN_KEY)
-        if isinstance(existing, ToolRouterPlan):
-            return existing
-        if isinstance(existing, asyncio.Task):
-            try:
-                plan = await existing
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Tool router cached task failed; falling back", exc_info=True)
-                plan = self._default_tool_router_plan(question=question)
-            notepad.note_entries[_NOTEPAD_TOOL_ROUTER_PLAN_KEY] = plan
-            return plan
-
-        task: asyncio.Task[ToolRouterPlan] = asyncio.create_task(
-            self._get_tool_router_plan(
-                question=question, local_crawl_context=local_crawl_context
-            )
-        )
-        notepad.note_entries[_NOTEPAD_TOOL_ROUTER_PLAN_KEY] = task
-
-        try:
-            plan = await task
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("Tool router plan failed; falling back", exc_info=True)
-            plan = self._default_tool_router_plan(question=question)
-
-        notepad.note_entries[_NOTEPAD_TOOL_ROUTER_PLAN_KEY] = plan
-        return plan
 
     @staticmethod
     def _days_until_known(question: MetaculusQuestion) -> float | None:
@@ -1882,13 +1313,14 @@ class SpringTemplateBot2026(ForecastBot):
         else:
             repo_url = cls._to_https_repo_url(cls._git_remote_url("origin") or "")
 
+        base = "metaculus-bot"
         if contact_email and repo_url:
-            return f"metac-bot-template (contact: {contact_email}; +{repo_url})"
+            return f"{base} (contact: {contact_email}; +{repo_url})"
         if contact_email:
-            return f"metac-bot-template (contact: {contact_email})"
+            return f"{base} (contact: {contact_email})"
         if repo_url:
-            return f"metac-bot-template (+{repo_url})"
-        return "metac-bot-template"
+            return f"{base} (+{repo_url})"
+        return base
 
     @classmethod
     def _sec_user_agent(cls) -> str:
@@ -4334,7 +3766,7 @@ def _matrix_send_message(message: str) -> None:
 
 async def _run_digest(
     *,
-    template_bot: SpringTemplateBot2026,
+    bot: "MetaculusBot",
     tournaments: list[str],
     state_path: Path,
     out_dir: Path,
@@ -4367,7 +3799,7 @@ async def _run_digest(
 
     for tournament_id in tournaments:
         try:
-            reports_or_errors = await template_bot.forecast_on_tournament(
+            reports_or_errors = await bot.forecast_on_tournament(
                 tournament_id, return_exceptions=True
             )
         except Exception as e:
@@ -4543,7 +3975,7 @@ if __name__ == "__main__":
     litellm_logger.propagate = False
 
     parser = argparse.ArgumentParser(
-        description="Run the TemplateBot forecasting system"
+        description="Run the forecasting bot"
     )
     parser.add_argument(
         "--mode",
@@ -4574,7 +4006,7 @@ if __name__ == "__main__":
     ], "Invalid run mode"
 
     publish_to_metaculus = run_mode in {"tournament", "metaculus_cup", "test_questions"}
-    template_bot = SpringTemplateBot2026(
+    bot = MetaculusBot(
         research_reports_per_question=1,
         predictions_per_research_report=5,
         use_research_summary_to_forecast=False,
@@ -4609,7 +4041,7 @@ if __name__ == "__main__":
             for tournament_id in tournaments:
                 forecast_reports.extend(
                     asyncio.run(
-                        template_bot.forecast_on_tournament(
+                        bot.forecast_on_tournament(
                             tournament_id, return_exceptions=True
                         )
                     )
@@ -4617,12 +4049,12 @@ if __name__ == "__main__":
         else:
             # You may want to change this to the specific tournament ID you want to forecast on
             seasonal_tournament_reports = asyncio.run(
-                template_bot.forecast_on_tournament(
+                bot.forecast_on_tournament(
                     client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
                 )
             )
             minibench_reports = asyncio.run(
-                template_bot.forecast_on_tournament(
+                bot.forecast_on_tournament(
                     client.CURRENT_MINIBENCH_ID, return_exceptions=True
                 )
             )
@@ -4630,9 +4062,9 @@ if __name__ == "__main__":
     elif run_mode == "metaculus_cup":
         # The Metaculus cup is a good way to test the bot's performance on regularly open questions. You can also use AXC_2025_TOURNAMENT_ID = 32564 or AI_2027_TOURNAMENT_ID = "ai-2027"
         # The Metaculus cup may not be initialized near the beginning of a season (i.e. January, May, September)
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
+            bot.forecast_on_tournament(
                 client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
             )
         )
@@ -4644,13 +4076,13 @@ if __name__ == "__main__":
             "https://www.metaculus.com/questions/22427/number-of-new-leading-ai-labs/",  # Number of New Leading AI Labs - Multiple Choice
             "https://www.metaculus.com/c/diffusion-community/38880/how-many-us-labor-strikes-due-to-ai-in-2029/",  # Number of US Labor Strikes Due to AI in 2029 - Discrete
         ]
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         questions = [
             client.get_question_by_url(question_url)
             for question_url in EXAMPLE_QUESTIONS
         ]
         forecast_reports = asyncio.run(
-            template_bot.forecast_questions(questions, return_exceptions=True)
+            bot.forecast_questions(questions, return_exceptions=True)
         )
     elif run_mode == "digest":
         tournaments, unsupported = _load_tournament_identifiers(
@@ -4663,17 +4095,17 @@ if __name__ == "__main__":
                 "No tournaments configured. Add tournament URLs/slugs to tracked_tournaments.txt or pass --tournament."
             )
 
-        template_bot.publish_reports_to_metaculus = False
-        template_bot.skip_previously_forecasted_questions = False
+        bot.publish_reports_to_metaculus = False
+        bot.skip_previously_forecasted_questions = False
         state_path = Path(".state") / "digest_state.json"
         out_dir = Path("reports") / "digest"
         asyncio.run(
             _run_digest(
-                template_bot=template_bot,
+                bot=bot,
                 tournaments=tournaments,
                 state_path=state_path,
                 out_dir=out_dir,
             )
         )
         forecast_reports = []
-    template_bot.log_report_summary(forecast_reports)
+    bot.log_report_summary(forecast_reports)

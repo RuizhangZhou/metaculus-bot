@@ -8,3 +8,8 @@
 
 ## Secrets
 - Never print or paste any tokens/keys/secrets in responses or logs.
+
+## Commit message convention
+- Include explicit identifiers for both the issue and PR to avoid ambiguity (GitHub uses `#<number>` for both).
+- Format: `<type>: <summary> (issue #<issue>, PR #<pr>)`
+- Example: `fix: tighten action timeouts (issue #19, PR #21)`

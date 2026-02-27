@@ -83,7 +83,7 @@ def _metaculus_api2_headers() -> dict[str, str]:
         raise RuntimeError("METACULUS_TOKEN is missing; cannot query api2.")
     return {
         "Authorization": f"Token {token}",
-        "User-Agent": "metac-bot-template retrospective (https://github.com/Metaculus/metac-bot-template)",
+        "User-Agent": "metaculus-bot retrospective",
     }
 
 

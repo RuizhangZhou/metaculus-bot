@@ -48,7 +48,7 @@ def _env_sec_user_agent() -> str:
     if ua:
         return ua
     return (
-        "metac-bot-template/0.1 (SEC_USER_AGENT not set; "
+        "metaculus-bot/0.1 (SEC_USER_AGENT not set; "
         "please set SEC_USER_AGENT='your app name (email)')"
     )
 

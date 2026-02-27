@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tournament:
-        description: "Tournament slug or URL (default: from env METACULUS_CUP_TOURNAMENT or metaculus-cup-spring-2026)"
+        description: "Tournament slug or URL (default: METACULUS_CUP_TOURNAMENT)"
         required: false
         default: ""
         type: string
@@ -56,7 +56,7 @@ jobs:
           RESEARCHER="${{ github.event.inputs.researcher }}"
           DEFAULT_MODEL="${{ github.event.inputs.default_model }}"
           PARSER_MODEL="${{ github.event.inputs.parser_model }}"
-          if [ -z "$TOURNAMENT" ]; then TOURNAMENT="${METACULUS_CUP_TOURNAMENT:-metaculus-cup-spring-2026}"; fi
+          if [ -z "$TOURNAMENT" ]; then TOURNAMENT="${METACULUS_CUP_TOURNAMENT:-}"; fi
           if [ -z "$RESEARCHER" ]; then RESEARCHER="no_research"; fi
 
           export METACULUS_CUP_TOURNAMENT="$TOURNAMENT"

@@ -1,6 +1,6 @@
 import unittest
 
-from template_bot_2026 import _extract_probability_percent
+from metaculus_bot import _extract_probability_percent
 
 
 class TestExtractProbabilityPercent(unittest.TestCase):

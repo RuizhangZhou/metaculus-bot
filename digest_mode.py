@@ -567,7 +567,7 @@ def _format_prediction_for_markdown(*, pred: object | None, question_type: str) 
 
 async def run_digest(
     *,
-    template_bot: ForecastBot,
+    bot: ForecastBot,
     tournaments: list[str],
     state_path: Path,
     out_dir: Path,
@@ -627,7 +627,7 @@ async def run_digest(
     for tournament_id in tournaments:
         try:
             if max_questions_per_tournament is None:
-                reports_or_errors = await template_bot.forecast_on_tournament(
+                reports_or_errors = await bot.forecast_on_tournament(
                     tournament_id, return_exceptions=True
                 )
             else:
@@ -639,7 +639,7 @@ async def run_digest(
                     questions = []
                 else:
                     questions = questions[:max_questions_per_tournament]
-                reports_or_errors = await template_bot.forecast_questions(
+                reports_or_errors = await bot.forecast_questions(
                     questions, return_exceptions=True
                 )
         except Exception as e:

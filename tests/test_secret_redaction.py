@@ -3,7 +3,7 @@ import unittest
 from forecasting_tools import GeneralLlm
 
 from secret_redaction import redact_secrets
-from template_bot_2026 import SpringTemplateBot2026
+from metaculus_bot import MetaculusBot
 
 
 class TestSecretRedaction(unittest.TestCase):
@@ -22,7 +22,7 @@ class TestSecretRedaction(unittest.TestCase):
 
     def test_bot_make_llm_dict_redacts_api_key(self) -> None:
         secret = "unit-test-keyId:unit-test-secret"
-        bot = SpringTemplateBot2026(
+        bot = MetaculusBot(
             research_reports_per_question=1,
             predictions_per_research_report=1,
             use_research_summary_to_forecast=False,
