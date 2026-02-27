@@ -1,5 +1,9 @@
-# Simple Metaculus forecasting bot
-This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/aib/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
+# Metaculus forecasting bot
+This repository contains my personal Metaculus forecasting bot. It runs locally or via GitHub Actions to forecast and (optionally) submit predictions for Metaculus tournaments.
+
+This repo started from Metaculus' official starter bot repository (upstream): https://github.com/Metaculus/metac-bot-template
+
+For tournament info and rules, see https://www.metaculus.com/aib/ (and the "Getting Started" section of the Metaculus [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 
 In this project are a few key files:
 - **main.py**: The entrypoint/CLI used by GitHub Actions.
@@ -10,17 +14,18 @@ In this project are a few key files:
 Join the conversation about bot creation, get support, and follow updates on the [Metaculus Discord](https://discord.com/invite/NJgCC2nDfh) 'build a forecasting bot' channel.
 
 ## 30min Video Tutorial
-This tutorial shows you how to set up the bot so you can start forecasting in the tournament.
+Metaculus has a 30min tutorial for the upstream starter bot; most of it applies to this repo as well.
 
 [![Watch the tutorial](https://cdn.loom.com/sessions/thumbnails/fc3c1a643b984a15b510647d8f760685-42b452e1ab7d2afa-full-play.gif)](https://www.loom.com/share/fc3c1a643b984a15b510647d8f760685?sid=29b502e0-cf64-421e-82c0-3a78451159ed)
 
-If you run into trouble, reach out to `ben [at] metaculus [.com]`
+If you run into trouble, the fastest help is usually in the Metaculus Discord (link above).
 
 
 ## Quick start -> Fork and use Github Actions
 The easiest way to use this repo is to fork it, enable github workflow/actions, and then set repository secrets. Then your bot will run every 30min, pick up new questions, and forecast on them. Automation is handled in the `.github/workflows/` folder. The `run_bot_on_tournament.yaml` workflow runs every 30min and will skip questions it has already forecasted on.
 
 1) **Fork the repository**: Go to the [repository](https://github.com/RuizhangZhou/metaculus-bot) and click 'fork'.
+   - If you want the official upstream starter bot instead, fork https://github.com/Metaculus/metac-bot-template
 2) **Set secrets**: Go to `Settings -> Secrets and variables -> Actions -> New repository secret` and set API keys/Tokens as secrets. You will want to set your METACULUS_TOKEN and an OPENROUTER_API_KEY (or whatever LLM/search providers you plan to use). This will be used to post questions to Metaculus. Make sure to copy the name of these variables exactly (including all caps).
    - You can create a METACULUS_TOKEN at https://metaculus.com/aib. If you get confused, please see the instructions on our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#creating-your-bot-account-and-metaculus-token) page.
    - If you want auto-submission, make sure `METACULUS_TOKEN` belongs to the account that should submit (e.g. your bot account).
@@ -92,9 +97,12 @@ To review newly-resolved questions on a schedule (e.g. weekend), use `--mode wee
 Remember that you can edit a bot non locally by clicking on a file in Github, and then clicking the 'Edit this file' button. Whether you develop locally or not, when making edits, attempt to do things that you think others have not tried, as this will help further innovation in the field more than doing something that has already been done. Feel free to ask about what has or has not been tried in the Discord, see [other bot's self-descriptions](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#what-are-other-bots-doing), or read bot's [open source code](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#open-source-bots).
 
 ## Run/Edit the bot locally
-Clone the repository. Find your terminal and run the following commands:
+Clone either this repository (recommended) or the upstream starter bot:
 ```bash
 git clone https://github.com/RuizhangZhou/metaculus-bot.git
+
+# Official upstream starter bot
+git clone https://github.com/Metaculus/metac-bot-template.git
 ```
 
 If you forked the repository first, you have to replace the url in the `git clone` command with the url to your fork. Just go to your forked repository and copy the URL from the address bar in the browser.

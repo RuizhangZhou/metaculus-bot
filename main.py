@@ -442,7 +442,7 @@ if __name__ == "__main__":
                         logging.getLogger(__name__).error(
                             f"Failed to forecast on tournament '{tournament_id}': {e}"
                         )
-                forecast_reports.append(e)
+                        forecast_reports.append(e)
             else:
                 seasonal_tournament_reports = asyncio.run(
                     bot.forecast_on_tournament(
