@@ -2827,7 +2827,10 @@ class MetaculusBot(
                                 repr(provider_error)[:300],
                             )
                         else:
-                            self._tavily_searcher_consecutive_failures += 1
+                            self._tavily_searcher_consecutive_failures = (
+                                getattr(self, "_tavily_searcher_consecutive_failures", 0)
+                                + 1
+                            )
                             if (
                                 max_provider_failures > 0
                                 and self._tavily_searcher_consecutive_failures

@@ -41,7 +41,11 @@ class _FakeSession:
 class TestTavilySearcher(unittest.IsolatedAsyncioTestCase):
     async def test_requires_api_key(self) -> None:
         previous = os.environ.pop("TAVILY_API_KEY", None)
-        self.addCleanup(lambda: os.environ.__setitem__("TAVILY_API_KEY", previous) if previous else None)
+        self.addCleanup(
+            lambda: os.environ.__setitem__("TAVILY_API_KEY", previous)
+            if previous is not None
+            else os.environ.pop("TAVILY_API_KEY", None)
+        )
 
         with self.assertRaises(ValueError):
             TavilySearcher()
@@ -99,4 +103,3 @@ class TestTavilySearcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json_body.get("max_results"), 2)
         self.assertEqual(json_body.get("include_raw_content"), True)
         self.assertEqual(json_body.get("time_range"), "week")
-

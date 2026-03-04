@@ -121,8 +121,8 @@ class TavilySmartSearcher:
         total_context_char_budget: int = 12000,
         timeout_seconds: float = 30,
     ) -> None:
-        assert temperature is None or 0 <= temperature <= 1
-        self._temperature = temperature
+        if temperature is not None and not (0 <= temperature <= 1):
+            raise ValueError("temperature must be between 0 and 1")
         self._num_searches_to_run = max(1, int(num_searches_to_run))
         self._num_sites_per_search = max(1, int(num_sites_per_search))
         self._per_result_char_budget = max(200, int(per_result_char_budget))
@@ -233,7 +233,7 @@ class TavilySmartSearcher:
             {search_result_context}
             <><><><><><><><><><><><>
 
-            Please follow the instructions and use the search results to answer the question. Unless the instructions specifify otherwise, cite your sources inline using [1], [2], etc and use markdown formatting.
+            Please follow the instructions and use the search results to answer the question. Unless the instructions specify otherwise, cite your sources inline using [1], [2], etc and use markdown formatting.
             """
         )
         return await self._llm.invoke(prompt)
