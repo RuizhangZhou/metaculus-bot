@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-02-22T01:31:22.988390+00:00'
+updated_at: '2026-03-15T01:31:21.386799+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -42,6 +42,38 @@ sources:
   - hazards
   - api
   notes: No key. Use GeoJSON queries for recent earthquakes (magnitude/time filters).
+- url: https://en.wikipedia.org/wiki/2026_Baden-W%C3%BCrttemberg_state_election
+  title: 2026 Baden-Württemberg state election
+  tags:
+  - election
+  - germany
+  notes: Official page detailing the election results and context.
+  added_at: '2026-03-15T01:31:21.386799+00:00'
+  last_seen_at: '2026-03-15T01:31:21.386799+00:00'
+- url: https://en.wikipedia.org/wiki/House_of_Representatives_(Nepal)
+  title: House of Representatives (Nepal)
+  tags:
+  - election
+  - nepal
+  notes: Overview of the House of Representatives in Nepal.
+  added_at: '2026-03-15T01:31:21.386799+00:00'
+  last_seen_at: '2026-03-15T01:31:21.386799+00:00'
+- url: https://en.wikipedia.org/wiki/Rastriya_Swatantra_Party
+  title: Rastriya Swatantra Party
+  tags:
+  - election
+  - nepal
+  notes: Information on the Rastriya Swatantra Party, the winning party in the election.
+  added_at: '2026-03-15T01:31:21.386799+00:00'
+  last_seen_at: '2026-03-15T01:31:21.386799+00:00'
+- url: https://en.wikipedia.org/wiki/Special:Statistics
+  title: Wikipedia Statistics
+  tags:
+  - wikipedia
+  - data
+  notes: Statistics page for tracking article counts on Wikipedia.
+  added_at: '2026-03-15T01:31:21.386799+00:00'
+  last_seen_at: '2026-03-15T01:31:21.386799+00:00'
 - url: https://fred.stlouisfed.org/docs/api/fred/
   title: FRED API documentation
   tags:
