@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-03-15T01:31:21.386799+00:00'
+updated_at: '2026-03-22T01:31:32.643031+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -81,6 +81,22 @@ sources:
   - macro
   - api
   notes: Requires FRED_API_KEY for API calls. Use tools to query series/observations.
+- url: https://polioeradication.org/polio-today/polio-now/this-week/
+  title: GPEI Polio This Week
+  tags:
+  - health
+  - polio
+  notes: Weekly updates on polio cases from the GPEI.
+  added_at: '2026-03-22T01:31:32.643031+00:00'
+  last_seen_at: '2026-03-22T01:31:32.643031+00:00'
+- url: https://polioeradication.org/polio-today/polio-now/wild-poliovirus-list/
+  title: Wild Poliovirus List
+  tags:
+  - health
+  - polio
+  notes: List of wild poliovirus cases reported by GPEI.
+  added_at: '2026-03-22T01:31:32.643031+00:00'
+  last_seen_at: '2026-03-22T01:31:32.643031+00:00'
 - url: https://www.bls.gov/developers/
   title: BLS public data API (developers)
   tags:
@@ -114,6 +130,14 @@ sources:
   - weather
   - rss
   notes: No key. Tropical Weather Outlook RSS feed.
+- url: https://www.oscars.org/oscars/ceremonies/2026
+  title: 98th Academy Awards Official Page
+  tags:
+  - film
+  - awards
+  notes: Official page for the 98th Academy Awards.
+  added_at: '2026-03-22T01:31:32.643031+00:00'
+  last_seen_at: '2026-03-22T01:31:32.643031+00:00'
 - url: https://www.sec.gov/files/company_tickers.json
   title: SEC ticker→CIK map
   tags:
@@ -122,6 +146,14 @@ sources:
   - xbrl
   - api
   notes: Maps tickers to CIK. Used for SEC endpoints. Requires SEC_USER_AGENT per SEC policy.
+- url: https://www.sixnationsrugby.com/en/m6n/fixtures/202600/table
+  title: 2026 Six Nations Championship Table
+  tags:
+  - rugby
+  - sports
+  notes: Official table for the 2026 Six Nations Championship.
+  added_at: '2026-03-22T01:31:32.643031+00:00'
+  last_seen_at: '2026-03-22T01:31:32.643031+00:00'
 - url: https://www.tsa.gov/news/press/releases/2025/12/22/tsa-prepares-for-holiday-travel-season-cap-record-year
   title: TSA Prepares for Holiday Travel Season
   tags:
@@ -146,3 +178,11 @@ sources:
   notes: Official TSA page for passenger volume statistics.
   added_at: '2026-02-22T01:31:22.988390+00:00'
   last_seen_at: '2026-02-22T01:31:22.988390+00:00'
+- url: https://www.who.int/teams/polio
+  title: WHO Polio Team
+  tags:
+  - health
+  - polio
+  notes: World Health Organization's polio team page.
+  added_at: '2026-03-22T01:31:32.643031+00:00'
+  last_seen_at: '2026-03-22T01:31:32.643031+00:00'
