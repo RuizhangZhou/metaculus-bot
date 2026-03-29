@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-03-22T01:31:32.643031+00:00'
+updated_at: '2026-03-29T01:04:10.031337+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -81,6 +81,54 @@ sources:
   - macro
   - api
   notes: Requires FRED_API_KEY for API calls. Use tools to query series/observations.
+- url: https://fred.stlouisfed.org/series/AAA10Y
+  title: Moody's Seasoned Aaa Corporate Bond Yield Relative to Yield on 10-Year Treasury Constant Maturity
+  tags:
+  - finance
+  - bonds
+  notes: Useful for comparing corporate and treasury yields.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://fred.stlouisfed.org/series/BAMLH0A0HYM2
+  title: ICE BofA US High Yield Index Option-Adjusted Spread
+  tags:
+  - finance
+  - bonds
+  notes: Critical for assessing credit risk in high yield bonds.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://fred.stlouisfed.org/series/BAMLH0A3HYCEY
+  title: ICE BofA CCC & Lower US High Yield Index Effective Yield
+  tags:
+  - finance
+  - bonds
+  notes: Relevant for high yield bond market forecasts.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://fred.stlouisfed.org/series/ECBESTRVOLWGTTRMDMNRT
+  title: 'Euro Short-Term Rate: Volume-Weighted Trimmed Mean Rate'
+  tags:
+  - finance
+  - interest-rates
+  notes: Important for Eurozone interest rate analysis.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://fred.stlouisfed.org/series/SOFR
+  title: Secured Overnight Financing Rate
+  tags:
+  - finance
+  - interest-rates
+  notes: Essential for understanding overnight rates.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://fred.stlouisfed.org/series/SOFR30DAYAVG
+  title: 30-Day Average SOFR
+  tags:
+  - finance
+  - interest-rates
+  notes: Key reference for SOFR predictions.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
 - url: https://polioeradication.org/polio-today/polio-now/this-week/
   title: GPEI Polio This Week
   tags:
@@ -121,6 +169,22 @@ sources:
   - policy
   - api
   notes: No key. Useful for verifiable notice/rule publication/effective dates.
+- url: https://www.metaculus.com/questions/42720
+  title: Will presidential impoundment authority be expanded?
+  tags:
+  - politics
+  - law
+  notes: Relevant for understanding legal frameworks.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://www.metaculus.com/questions/42725
+  title: Will the winner of the 2026 FIFA World Cup be a country that has never won before?
+  tags:
+  - sports
+  - world-cup
+  notes: Interesting for sports forecasting.
+  added_at: '2026-03-29T01:04:10.031337+00:00'
+  last_seen_at: '2026-03-29T01:04:10.031337+00:00'
 - url: https://www.nhc.noaa.gov/gtwo.xml
   title: NOAA NHC tropical outlook RSS
   tags:
