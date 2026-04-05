@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-03-29T01:04:10.031337+00:00'
+updated_at: '2026-04-05T00:31:18.160806+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -42,6 +42,14 @@ sources:
   - hazards
   - api
   notes: No key. Use GeoJSON queries for recent earthquakes (magnitude/time filters).
+- url: https://electionguide.org/elections/id/5111/
+  title: IFES Election Guide - Faroese Parliament 2026
+  tags:
+  - election
+  - faroe
+  notes: Reputable tracker for election information.
+  added_at: '2026-04-05T00:31:18.160806+00:00'
+  last_seen_at: '2026-04-05T00:31:18.160806+00:00'
 - url: https://en.wikipedia.org/wiki/2026_Baden-W%C3%BCrttemberg_state_election
   title: 2026 Baden-Württemberg state election
   tags:
@@ -50,6 +58,14 @@ sources:
   notes: Official page detailing the election results and context.
   added_at: '2026-03-15T01:31:21.386799+00:00'
   last_seen_at: '2026-03-15T01:31:21.386799+00:00'
+- url: https://en.wikipedia.org/wiki/2026_Faroese_general_election
+  title: 2026 Faroese General Election
+  tags:
+  - election
+  - faroe
+  notes: Primary source for election results and resolution criteria.
+  added_at: '2026-04-05T00:31:18.160806+00:00'
+  last_seen_at: '2026-04-05T00:31:18.160806+00:00'
 - url: https://en.wikipedia.org/wiki/House_of_Representatives_(Nepal)
   title: House of Representatives (Nepal)
   tags:
@@ -74,6 +90,14 @@ sources:
   notes: Statistics page for tracking article counts on Wikipedia.
   added_at: '2026-03-15T01:31:21.386799+00:00'
   last_seen_at: '2026-03-15T01:31:21.386799+00:00'
+- url: https://europeelects.eu/denmark/faroe/
+  title: Europe Elects - Faroe Islands
+  tags:
+  - election
+  - faroe
+  notes: Alternative source for electoral data.
+  added_at: '2026-04-05T00:31:18.160806+00:00'
+  last_seen_at: '2026-04-05T00:31:18.160806+00:00'
 - url: https://fred.stlouisfed.org/docs/api/fred/
   title: FRED API documentation
   tags:
