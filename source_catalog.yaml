@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-04-05T00:31:18.160806+00:00'
+updated_at: '2026-04-12T00:33:12.503366+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -98,6 +98,14 @@ sources:
   notes: Alternative source for electoral data.
   added_at: '2026-04-05T00:31:18.160806+00:00'
   last_seen_at: '2026-04-05T00:31:18.160806+00:00'
+- url: https://finance.yahoo.com/quote/LDOS
+  title: LDOS Stock Information
+  tags:
+  - finance
+  - stock
+  notes: Yahoo Finance page for Leidos Holdings.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
 - url: https://fred.stlouisfed.org/docs/api/fred/
   title: FRED API documentation
   tags:
@@ -169,6 +177,14 @@ sources:
   notes: List of wild poliovirus cases reported by GPEI.
   added_at: '2026-03-22T01:31:32.643031+00:00'
   last_seen_at: '2026-03-22T01:31:32.643031+00:00'
+- url: https://trends.google.com/trends/explore?geo=US&tz=0&q=onlyfarms&date=2026-02-27%202026-03-29
+  title: Google Trends for 'onlyfarms'
+  tags:
+  - trends
+  - google
+  notes: Google Trends data for the term 'onlyfarms'.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
 - url: https://www.bls.gov/developers/
   title: BLS public data API (developers)
   tags:
@@ -193,6 +209,32 @@ sources:
   - policy
   - api
   notes: No key. Useful for verifiable notice/rule publication/effective dates.
+- url: https://www.metaculus.com/questions/40864
+  title: NASA's Artemis II Mission
+  tags:
+  - nasa
+  - artemis
+  notes: Related question on Artemis II mission.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/42472
+  title: US-Iran Ceasefire
+  tags:
+  - us
+  - iran
+  - ceasefire
+  notes: Related question on US-Iran relations.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/42542
+  title: US Ground Invasion of Iran
+  tags:
+  - us
+  - iran
+  - invasion
+  notes: Related question on US military actions.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
 - url: https://www.metaculus.com/questions/42720
   title: Will presidential impoundment authority be expanded?
   tags:
@@ -209,6 +251,72 @@ sources:
   notes: Interesting for sports forecasting.
   added_at: '2026-03-29T01:04:10.031337+00:00'
   last_seen_at: '2026-03-29T01:04:10.031337+00:00'
+- url: https://www.metaculus.com/questions/42729
+  title: Shipping Traffic Through the Strait of Hormuz
+  tags:
+  - shipping
+  - hormuz
+  notes: Related Metaculus question on shipping traffic.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43003
+  title: ICE BofA High Yield Emerging Markets Corporate Plus Index
+  tags:
+  - finance
+  - bofa
+  notes: Related question on corporate index.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43004
+  title: Bilateral Ceasefire in Russo-Ukrainian Conflict
+  tags:
+  - ukraine
+  - russia
+  - ceasefire
+  notes: Related question on Russo-Ukrainian conflict.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43010
+  title: Interest in 'tsa funding'
+  tags:
+  - tsa
+  - funding
+  notes: Related question on TSA funding.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43012
+  title: Coinbase Bitcoin Value
+  tags:
+  - bitcoin
+  - crypto
+  notes: Related question on Bitcoin value.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43018
+  title: AIG Market Close Price
+  tags:
+  - aig
+  - finance
+  notes: Related question on AIG stock.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.metaculus.com/questions/43019
+  title: ABNB Market Close Price
+  tags:
+  - abnb
+  - finance
+  notes: Related question on Airbnb stock.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://www.nasa.gov/event/nasas-northrop-grumman-crs-24/
+  title: NASA Northrop Grumman CRS-24 Mission
+  tags:
+  - nasa
+  - space
+  - launch
+  notes: Official event page for CRS-24 mission.
+  added_at: '2026-04-12T00:33:12.503366+00:00'
+  last_seen_at: '2026-04-12T00:33:12.503366+00:00'
 - url: https://www.nhc.noaa.gov/gtwo.xml
   title: NOAA NHC tropical outlook RSS
   tags:
