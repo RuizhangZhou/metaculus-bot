@@ -1,0 +1,23 @@
+{
+  "available_models": [
+    "gpt-oss-120b",
+    "qwen3-embedding-8b",
+    "e5-mistral-7b-instruct",
+    "mistral-small-4-119b-2603",
+    "gpt-5.2",
+    "gpt-5.4-mini"
+  ],
+  "chat_models": [
+    "gpt-5.2",
+    "gpt-5.4-mini",
+    "gpt-oss-120b",
+    "mistral-small-4-119b-2603"
+  ],
+  "fallback_models": [
+    "gpt-5.4-mini",
+    "gpt-oss-120b",
+    "mistral-small-4-119b-2603"
+  ],
+  "generated_at": "2026-04-15T12:45:55.259453+00:00",
+  "primary_model": "gpt-5.2"
+}

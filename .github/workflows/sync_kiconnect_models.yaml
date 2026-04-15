@@ -1,0 +1,50 @@
+name: Sync KIconnect Models
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sync_models:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync KIconnect models and repo variables
+        run: |
+          python scripts/sync_kiconnect_models.py \
+            --env-template .env.template \
+            --manifest .github/kiconnect_models.json \
+            --update-github-vars \
+            --github-repo "${GITHUB_REPOSITORY}"
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          KICONNECT_API_URL: ${{ secrets.KICONNECT_API_URL }}
+          KICONNECT_API_KEY: ${{ secrets.KICONNECT_API_KEY }}
+
+      - name: Commit tracked changes
+        run: |
+          if git diff --quiet -- .env.template .github/kiconnect_models.json; then
+            echo "No tracked changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .env.template .github/kiconnect_models.json
+          git commit -m "chore: sync kiconnect chat models"
+          git push
