@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-04-12T00:33:12.503366+00:00'
+updated_at: '2026-04-19T00:31:21.448067+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -34,6 +34,14 @@ sources:
   - filings
   - api
   notes: URL pattern; replace CIK0000000000 with the 10-digit CIK. Provides recent filing links. Requires SEC_USER_AGENT.
+- url: https://dev.to/rahulxsingh/swe-bench-scores-and-leaderboard-explained-2026-54of
+  title: SWE-bench Scores Explained
+  tags:
+  - swe-bench
+  - explanation
+  notes: Detailed explanation of SWE-bench scores and leaderboard.
+  added_at: '2026-04-19T00:31:21.448067+00:00'
+  last_seen_at: '2026-04-19T00:31:21.448067+00:00'
 - url: https://earthquake.usgs.gov/fdsnws/event/1/query
   title: USGS earthquake query API
   tags:
@@ -177,6 +185,14 @@ sources:
   notes: List of wild poliovirus cases reported by GPEI.
   added_at: '2026-03-22T01:31:32.643031+00:00'
   last_seen_at: '2026-03-22T01:31:32.643031+00:00'
+- url: https://swe-bench.github.io/verified.html
+  title: SWE-bench Verified Leaderboard
+  tags:
+  - swe-bench
+  - leaderboard
+  notes: Official leaderboard for SWE-bench Verified scores.
+  added_at: '2026-04-19T00:31:21.448067+00:00'
+  last_seen_at: '2026-04-19T00:31:21.448067+00:00'
 - url: https://trends.google.com/trends/explore?geo=US&tz=0&q=onlyfarms&date=2026-02-27%202026-03-29
   title: Google Trends for 'onlyfarms'
   tags:
@@ -350,6 +366,14 @@ sources:
   notes: Official table for the 2026 Six Nations Championship.
   added_at: '2026-03-22T01:31:32.643031+00:00'
   last_seen_at: '2026-03-22T01:31:32.643031+00:00'
+- url: https://www.swebench.com/verified.html
+  title: SWE-bench Verified Overview
+  tags:
+  - swe-bench
+  - overview
+  notes: Overview of SWE-bench Verified benchmarks.
+  added_at: '2026-04-19T00:31:21.448067+00:00'
+  last_seen_at: '2026-04-19T00:31:21.448067+00:00'
 - url: https://www.tsa.gov/news/press/releases/2025/12/22/tsa-prepares-for-holiday-travel-season-cap-record-year
   title: TSA Prepares for Holiday Travel Season
   tags:
