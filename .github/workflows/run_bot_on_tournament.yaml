@@ -1,10 +1,10 @@
-name: Forecast on Tournaments (AIB + minibench)
+name: Forecast on Tournaments (Summer FutureEval + minibench)
 
 on:
   workflow_dispatch:
     inputs:
       tournament:
-        description: "Single tournament to run (leave empty for both: AIB + minibench)"
+        description: "Single tournament to run (leave empty for Summer FutureEval + minibench)"
         required: false
         default: ""
         type: string
@@ -116,7 +116,7 @@ jobs:
             TOURNAMENTS=("$MANUAL_TOURNAMENT")
           else
             TOURNAMENTS=(
-              "${AIB_TOURNAMENT:-spring-aib-2026}"
+              "${BOT_TOURNAMENT:-summer-futureeval-2026}"
               "https://www.metaculus.com/tournament/minibench/"
             )
           fi
@@ -143,7 +143,7 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          AIB_TOURNAMENT: ${{ vars.AIB_TOURNAMENT }}
+          BOT_TOURNAMENT: ${{ vars.BOT_TOURNAMENT }}
           KICONNECT_API_URL: ${{ secrets.KICONNECT_API_URL }}
           KICONNECT_API_KEY: ${{ secrets.KICONNECT_API_KEY }}
           KICONNECT_MODEL: ${{ vars.KICONNECT_MODEL }}

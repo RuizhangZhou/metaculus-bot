@@ -2,8 +2,8 @@
 # Lines starting with # are ignored.
 #
 # Note: This file is used by `--mode digest` (human-facing monitoring). The bot
-# submission workflow is configured separately to only submit to Spring AIB.
-https://www.metaculus.com/tournament/metaculus-cup-spring-2026/
+# submission workflow defaults to Summer FutureEval plus minibench.
+https://www.metaculus.com/tournament/summer-futureeval-2026/
 # (Enable more tournaments later as needed)
 # https://www.metaculus.com/tournament/market-pulse-26q1/
 # https://www.metaculus.com/tournament/climate/

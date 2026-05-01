@@ -33,7 +33,7 @@ The easiest way to use this repo is to fork it, enable github workflow/actions, 
    - You can get an OPENROUTER_API_KEY with free credits by filling out this [form](https://forms.gle/aQdYMq9Pisrf1v7d8). If you don't want to wait or want to use more models than we provide, you can also make your own API key on OpenRouter's [website](https://openrouter.ai/). First, make an account, then go to your profile, then go to "keys", and then make a key. Please read our [documentation](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#can-i-get-free-search-and-llm-services) about our free credits
    - Other LLM and Search providers should work out of the box (such as OPENAI_API_KEY, PERPLEXITY_API_KEY, ASKNEWS_SECRET, etc), though we recommend OpenRouter to start.
    - Optional notifications: set `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN`, `MATRIX_ROOM_ID` to receive Matrix messages.
-4) **Enable Actions**: Go to 'Actions' then click 'Enable'. Then open the workflow you want to run (e.g. 'Forecast on Tournaments (AIB + minibench)') and click 'Enable'. To test if the workflow is working, click 'Run workflow', choose the main branch, then click the green 'Run workflow' button. This will check for new questions and forecast only on ones it has not yet successfully forecast on.
+4) **Enable Actions**: Go to 'Actions' then click 'Enable'. Then open the workflow you want to run (e.g. 'Forecast on Tournaments (Summer FutureEval + minibench)') and click 'Enable'. To test if the workflow is working, click 'Run workflow', choose the main branch, then click the green 'Run workflow' button. This will check for new questions and forecast only on ones it has not yet successfully forecast on.
 
 The bot should just work as is at this point. You can disable the workflow by clicking `Actions > <workflow name> > Triple dots > disable workflow`
 
@@ -43,9 +43,9 @@ Instructions for getting your METACULUS_TOKEN, OPENROUTER_API_KEY, or optional s
 ## Changing the Github automation
 The workflows live in `.github/workflows/`.
 
-- `run_bot_on_tournament.yaml` runs `python main.py --mode tournament --tournaments-file tracked_tournaments.txt` on a schedule (and submits forecasts).
+- `run_bot_on_tournament.yaml` runs `python main.py --mode tournament --tournament "$TOURNAMENT"` on a schedule (and submits forecasts). By default it runs Summer 2026 FutureEval plus minibench.
 - `daily_digest.yaml` runs `python main.py --mode digest` daily (no submission) and can notify via Matrix if significant changes are detected.
-- To change which tournaments are used, edit `tracked_tournaments.txt`.
+- To change the submission tournament without a code change, set the GitHub Actions repository variable `BOT_TOURNAMENT`. `tracked_tournaments.txt` is used by digest mode.
 - Both workflows expose `workflow_dispatch` inputs so you can override `researcher`/models from the Actions UI without committing code changes.
 
 ## Daily digest (no submission)
