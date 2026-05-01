@@ -123,20 +123,22 @@ jobs:
 
           echo "Tournaments to process: ${TOURNAMENTS[*]}"
 
-          # Run bot for each tournament
+          ARGS=(main.py --mode tournament --researcher "$RESEARCHER" --submit)
           for TOURNAMENT in "${TOURNAMENTS[@]}"; do
-            echo "=== Processing tournament: $TOURNAMENT ==="
-            ARGS=(main.py --mode tournament --tournament "$TOURNAMENT" --researcher "$RESEARCHER" --submit)
-            if [ -n "$DEFAULT_MODEL" ]; then ARGS+=(--default-model "$DEFAULT_MODEL"); fi
-            if [ -n "$PARSER_MODEL" ]; then ARGS+=(--parser-model "$PARSER_MODEL"); fi
-            EXIT_CODE=0
-            timeout --signal=TERM --kill-after=2m "${TOURNAMENT_TIMEOUT_MINUTES}m" poetry run python "${ARGS[@]}" || EXIT_CODE=$?
-            if [ "$EXIT_CODE" -eq 124 ]; then
-              echo "Warning: Timed out after ${TOURNAMENT_TIMEOUT_MINUTES}m for $TOURNAMENT, continuing..."
-            elif [ "$EXIT_CODE" -ne 0 ]; then
-              echo "Warning: Failed to process $TOURNAMENT (exit code $EXIT_CODE), continuing..."
-            fi
+            ARGS+=(--tournament "$TOURNAMENT")
           done
+          if [ -n "$DEFAULT_MODEL" ]; then ARGS+=(--default-model "$DEFAULT_MODEL"); fi
+          if [ -n "$PARSER_MODEL" ]; then ARGS+=(--parser-model "$PARSER_MODEL"); fi
+
+          echo "Tournaments to process in one scan: ${TOURNAMENTS[*]}"
+          EXIT_CODE=0
+          timeout --signal=TERM --kill-after=2m "${TOURNAMENT_TIMEOUT_MINUTES}m" poetry run python "${ARGS[@]}" || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -eq 124 ]; then
+            echo "Warning: Timed out after ${TOURNAMENT_TIMEOUT_MINUTES}m for combined tournament run"
+          elif [ "$EXIT_CODE" -ne 0 ]; then
+            echo "Warning: Combined tournament run failed (exit code $EXIT_CODE)"
+          fi
+          exit "$EXIT_CODE"
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
@@ -155,6 +157,8 @@ jobs:
           BOT_REQUIRE_KICONNECT: "true"
           BOT_ENABLE_FALLBACK: "true"
           BOT_FALLBACK_MODEL: "openrouter/openai/gpt-oss-120b:free"
+          BOT_MAX_CONCURRENT_QUESTIONS: "2"
+          BOT_MAX_CONCURRENT_TASKS: "1"
           MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
           MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}

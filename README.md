@@ -43,7 +43,7 @@ Instructions for getting your METACULUS_TOKEN, OPENROUTER_API_KEY, or optional s
 ## Changing the Github automation
 The workflows live in `.github/workflows/`.
 
-- `run_bot_on_tournament.yaml` runs `python main.py --mode tournament --tournament "$TOURNAMENT"` on a schedule (and submits forecasts). By default it runs Summer 2026 FutureEval plus minibench.
+- `run_bot_on_tournament.yaml` scans Summer 2026 FutureEval plus minibench in one bot process, deduplicates open questions, then submits forecasts. It sets `BOT_MAX_CONCURRENT_QUESTIONS=2` and `BOT_MAX_CONCURRENT_TASKS=1` by default.
 - `daily_digest.yaml` runs `python main.py --mode digest` daily (no submission) and can notify via Matrix if significant changes are detected.
 - To change the submission tournament without a code change, set the GitHub Actions repository variable `BOT_TOURNAMENT`. `tracked_tournaments.txt` is used by digest mode.
 - Both workflows expose `workflow_dispatch` inputs so you can override `researcher`/models from the Actions UI without committing code changes.

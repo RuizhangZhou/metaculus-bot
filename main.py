@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import dotenv
 import requests
@@ -124,6 +124,152 @@ def _env_bool(name: str, default: bool) -> bool:
         return False
     logging.getLogger(__name__).warning(f"Ignoring invalid boolean for {name}: {raw!r}")
     return default
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str) and value.strip():
+        raw = value.strip()
+        try:
+            if raw.endswith("Z"):
+                raw = f"{raw[:-1]}+00:00"
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    return None
+
+
+def _first_question_datetime(question: object, attr_names: tuple[str, ...]) -> datetime | None:
+    for attr_name in attr_names:
+        value = getattr(question, attr_name, None)
+        parsed = _parse_datetime(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _question_identity(question: object) -> tuple[object, ...]:
+    id_of_post = getattr(question, "id_of_post", None)
+    id_of_question = getattr(question, "id_of_question", None)
+    group_option = getattr(question, "group_question_option", None)
+    conditional_type = getattr(question, "conditional_type", None)
+    if id_of_post or id_of_question:
+        return (id_of_post, id_of_question, group_option, conditional_type)
+    return (
+        getattr(question, "page_url", None),
+        getattr(question, "question_text", None),
+        group_option,
+        conditional_type,
+    )
+
+
+def _question_url(question: object) -> str:
+    page_url = getattr(question, "page_url", None)
+    if page_url:
+        return str(page_url)
+    id_of_post = getattr(question, "id_of_post", None)
+    if id_of_post:
+        return f"https://www.metaculus.com/questions/{id_of_post}"
+    return "(unknown url)"
+
+
+def _log_question_window(question: object, *, tournament_id: str) -> None:
+    logger = logging.getLogger(__name__)
+    open_time = _first_question_datetime(
+        question,
+        (
+            "open_time",
+            "published_at",
+            "publish_time",
+            "created_time",
+            "created_at",
+            "scheduled_open_time",
+        ),
+    )
+    close_time = _first_question_datetime(
+        question,
+        (
+            "close_time",
+            "scheduled_close_time",
+            "actual_close_time",
+            "scheduled_resolution_time",
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    duration_hours = (
+        (close_time - open_time).total_seconds() / 3600
+        if open_time is not None and close_time is not None
+        else None
+    )
+    remaining_hours = (
+        (close_time - now).total_seconds() / 3600
+        if close_time is not None
+        else None
+    )
+    question_text = str(getattr(question, "question_text", "(unknown question)"))
+    logger.info(
+        "Open question window: tournament=%s url=%s already_forecasted=%s "
+        "open_utc=%s close_utc=%s duration_hours=%s remaining_hours=%s text=%s",
+        tournament_id,
+        _question_url(question),
+        getattr(question, "already_forecasted", None),
+        open_time.isoformat() if open_time is not None else "(unknown)",
+        close_time.isoformat() if close_time is not None else "(unknown)",
+        f"{duration_hours:.2f}" if duration_hours is not None else "(unknown)",
+        f"{remaining_hours:.2f}" if remaining_hours is not None else "(unknown)",
+        question_text[:180],
+    )
+
+
+def _collect_open_questions_from_tournaments(
+    *, client: MetaculusClient, tournaments: list[str]
+) -> tuple[list[Any], list[BaseException]]:
+    logger = logging.getLogger(__name__)
+    questions: list[Any] = []
+    failures: list[BaseException] = []
+    seen: set[tuple[object, ...]] = set()
+
+    for tournament_id in tournaments:
+        try:
+            tournament_questions = client.get_all_open_questions_from_tournament(
+                tournament_id
+            )
+        except BaseException as e:
+            logger.error("Failed to scan tournament '%s': %s", tournament_id, e)
+            failures.append(e)
+            continue
+
+        logger.info(
+            "Scanned tournament '%s': %s open question(s)",
+            tournament_id,
+            len(tournament_questions),
+        )
+        for question in tournament_questions:
+            _log_question_window(question, tournament_id=tournament_id)
+            identity = _question_identity(question)
+            if identity in seen:
+                logger.info(
+                    "Skipping duplicate open question from tournament '%s': %s",
+                    tournament_id,
+                    _question_url(question),
+                )
+                continue
+            seen.add(identity)
+            questions.append(question)
+
+    logger.info(
+        "Open question scan complete: tournaments=%s unique_open_questions=%s failures=%s",
+        ",".join(tournaments),
+        len(questions),
+        len(failures),
+    )
+    return questions, failures
 
 
 if __name__ == "__main__":
@@ -430,32 +576,37 @@ if __name__ == "__main__":
                     raise SystemExit(
                         "No valid tournaments configured via --tournaments-file/--tournament."
                     )
-                for tournament_id in tournaments:
-                    try:
-                        forecast_reports.extend(
-                            asyncio.run(
-                                bot.forecast_on_tournament(
-                                    tournament_id, return_exceptions=True
-                                )
+                questions, scan_failures = _collect_open_questions_from_tournaments(
+                    client=client,
+                    tournaments=tournaments,
+                )
+                forecast_reports.extend(scan_failures)
+                if questions:
+                    forecast_reports.extend(
+                        asyncio.run(
+                            bot.forecast_questions(
+                                questions, return_exceptions=True
                             )
                         )
-                    except Exception as e:
-                        logging.getLogger(__name__).error(
-                            f"Failed to forecast on tournament '{tournament_id}': {e}"
-                        )
-                        forecast_reports.append(e)
+                    )
             else:
-                seasonal_tournament_reports = asyncio.run(
-                    bot.forecast_on_tournament(
-                        client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
-                    )
+                default_tournaments = [
+                    client.CURRENT_AI_COMPETITION_ID,
+                    client.CURRENT_MINIBENCH_ID,
+                ]
+                questions, scan_failures = _collect_open_questions_from_tournaments(
+                    client=client,
+                    tournaments=default_tournaments,
                 )
-                minibench_reports = asyncio.run(
-                    bot.forecast_on_tournament(
-                        client.CURRENT_MINIBENCH_ID, return_exceptions=True
+                forecast_reports.extend(scan_failures)
+                if questions:
+                    forecast_reports.extend(
+                        asyncio.run(
+                            bot.forecast_questions(
+                                questions, return_exceptions=True
+                            )
+                        )
                     )
-                )
-                forecast_reports = seasonal_tournament_reports + minibench_reports
 
         elif run_mode == "tournament_update":
             bot.skip_previously_forecasted_questions = False
