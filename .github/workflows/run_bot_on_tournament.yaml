@@ -50,7 +50,7 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    timeout-minutes: 45
+    timeout-minutes: 120
     environment: "metaculus bot"
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
@@ -90,7 +90,7 @@ jobs:
         timeout-minutes: 2
         run: poetry run playwright install chromium
       - name: Run bot
-        timeout-minutes: 35
+        timeout-minutes: 100
         run: |
           MANUAL_TOURNAMENT="${{ github.event.inputs.tournament }}"
           RESEARCHER="${{ github.event.inputs.researcher }}"
@@ -108,7 +108,7 @@ jobs:
           export SMART_SEARCHER_NUM_SEARCHES
           export SMART_SEARCHER_NUM_SITES_PER_SEARCH
           export SMART_SEARCHER_USE_ADVANCED_FILTERS
-          TOURNAMENT_TIMEOUT_MINUTES="${BOT_TOURNAMENT_TIMEOUT_MINUTES:-15}"
+          TOURNAMENT_TIMEOUT_MINUTES="${BOT_TOURNAMENT_TIMEOUT_MINUTES:-90}"
 
           # Build tournament list
           # If manual input provided, only run that tournament
@@ -134,9 +134,10 @@ jobs:
           EXIT_CODE=0
           timeout --signal=TERM --kill-after=2m "${TOURNAMENT_TIMEOUT_MINUTES}m" poetry run python "${ARGS[@]}" || EXIT_CODE=$?
           if [ "$EXIT_CODE" -eq 124 ]; then
-            echo "Warning: Timed out after ${TOURNAMENT_TIMEOUT_MINUTES}m for combined tournament run"
+            echo "::warning::Timed out after ${TOURNAMENT_TIMEOUT_MINUTES}m for combined tournament run; treating this scheduled run as partially complete."
+            exit 0
           elif [ "$EXIT_CODE" -ne 0 ]; then
-            echo "Warning: Combined tournament run failed (exit code $EXIT_CODE)"
+            echo "::error::Combined tournament run failed (exit code $EXIT_CODE)"
           fi
           exit "$EXIT_CODE"
         # this reads the environment variables from the github repository.
