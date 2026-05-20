@@ -9,9 +9,9 @@ on:
         default: ""
         type: string
       researcher:
-        description: "Research strategy/model (e.g. no_research, smart-searcher/kiconnect)"
+        description: "Research strategy/model (e.g. no_research, tavily-searcher/kiconnect, smart-searcher/kiconnect)"
         required: false
-        default: "smart-searcher/kiconnect"
+        default: "tavily-searcher/kiconnect"
         type: string
       default_model:
         description: "Override default LLM model (Litellm format). Leave empty to use KICONNECT_MODEL."
@@ -100,7 +100,7 @@ jobs:
           SMART_SEARCHER_NUM_SITES_PER_SEARCH="${{ github.event.inputs.smart_searcher_num_sites_per_search }}"
           SMART_SEARCHER_USE_ADVANCED_FILTERS="${{ github.event.inputs.smart_searcher_use_advanced_filters }}"
 
-          if [ -z "$RESEARCHER" ]; then RESEARCHER="smart-searcher/kiconnect"; fi
+          if [ -z "$RESEARCHER" ]; then RESEARCHER="tavily-searcher/kiconnect"; fi
           if [ -z "$SMART_SEARCHER_NUM_SEARCHES" ]; then SMART_SEARCHER_NUM_SEARCHES="1"; fi
           if [ -z "$SMART_SEARCHER_NUM_SITES_PER_SEARCH" ]; then SMART_SEARCHER_NUM_SITES_PER_SEARCH="5"; fi
           if [ -z "$SMART_SEARCHER_USE_ADVANCED_FILTERS" ]; then SMART_SEARCHER_USE_ADVANCED_FILTERS="false"; fi
@@ -144,6 +144,7 @@ jobs:
         # Store under Settings --> Secrets and variables --> Actions
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BOT_TOURNAMENT: ${{ vars.BOT_TOURNAMENT }}
@@ -166,4 +167,5 @@ jobs:
           MATRIX_NOTIFY_ALWAYS: "false"
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || secrets.SEC_USER_AGENT }}
           BOT_ENABLE_LOCAL_QUESTION_CRAWL: "true"
+          BOT_LOCAL_CRAWL_INCLUDE_QUESTION_PAGE: "false"
           BOT_TOURNAMENT_TIMEOUT_MINUTES: ${{ vars.BOT_TOURNAMENT_TIMEOUT_MINUTES }}
