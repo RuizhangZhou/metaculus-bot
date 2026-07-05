@@ -28,6 +28,7 @@ from bot.local_crawl_support import LocalCrawlSupportMixin
 from bot.smart_searcher_circuit import SmartSearcherCircuitMixin
 from bot.tavily_searcher import TavilySmartSearcher
 from bot.tool_router import ToolRouterMixin, ToolRouterPlan
+from local_web_crawl import PlaywrightWebPageParser
 
 import requests
 
@@ -1592,69 +1593,94 @@ class MetaculusBot(
         """
 
         max_concurrent_questions = _env_int("BOT_MAX_CONCURRENT_QUESTIONS", 1)
-        if max_concurrent_questions <= 0:
-            return await super().forecast_questions(
-                questions, return_exceptions=return_exceptions
+
+        local_crawl_parser_started = False
+        if (
+            self._local_crawl_enabled()
+            and (self._local_crawl_parser is None or self._local_crawl_limits is None)
+        ):
+            limits = self._build_local_crawl_limits_from_env()
+            user_agent = os.getenv("BOT_LOCAL_CRAWL_USER_AGENT", "").strip() or None
+            self._local_crawl_limits = limits
+            self._local_crawl_parser = PlaywrightWebPageParser(
+                limits=limits,
+                user_agent=user_agent,
             )
+            local_crawl_parser_started = True
 
-        if self.skip_previously_forecasted_questions:
-            unforecasted_questions = [
-                question
-                for question in questions
-                if not getattr(question, "already_forecasted", False)
-            ]
-            if len(questions) != len(unforecasted_questions):
-                logger.info(
-                    f"Skipping {len(questions) - len(unforecasted_questions)} previously forecasted questions"
+        try:
+            if max_concurrent_questions <= 0:
+                return await ForecastBot.forecast_questions(
+                    self,
+                    questions, return_exceptions=return_exceptions
                 )
-            questions = unforecasted_questions
 
-        if max_concurrent_questions == 1:
-            reports = []
-            for question in questions:
-                try:
-                    reports.append(
-                        await self._run_individual_question_with_error_propagation(
+            if self.skip_previously_forecasted_questions:
+                unforecasted_questions = [
+                    question
+                    for question in questions
+                    if not getattr(question, "already_forecasted", False)
+                ]
+                if len(questions) != len(unforecasted_questions):
+                    logger.info(
+                        f"Skipping {len(questions) - len(unforecasted_questions)} previously forecasted questions"
+                    )
+                questions = unforecasted_questions
+
+            if max_concurrent_questions == 1:
+                reports = []
+                for question in questions:
+                    try:
+                        reports.append(
+                            await self._run_individual_question_with_error_propagation(
+                                question
+                            )
+                        )
+                    except BaseException as e:
+                        error_str = str(e).lower()
+                        if not return_exceptions:
+                            raise
+                        reports.append(e)
+                        if "free-models-per-day" in error_str:
+                            logger.error(
+                                "OpenRouter free model daily quota exhausted and no fallback available; stopping early."
+                            )
+                            break
+            else:
+                semaphore = asyncio.Semaphore(max_concurrent_questions)
+
+                async def run_one(question):
+                    async with semaphore:
+                        return await self._run_individual_question_with_error_propagation(
                             question
                         )
-                    )
-                except BaseException as e:
-                    error_str = str(e).lower()
-                    if not return_exceptions:
-                        raise
-                    reports.append(e)
-                    if "free-models-per-day" in error_str:
-                        logger.error(
-                            "OpenRouter free model daily quota exhausted and no fallback available; stopping early."
-                        )
-                        break
-        else:
-            semaphore = asyncio.Semaphore(max_concurrent_questions)
 
-            async def run_one(question):
-                async with semaphore:
-                    return await self._run_individual_question_with_error_propagation(
-                        question
-                    )
+                reports = await asyncio.gather(
+                    *[run_one(question) for question in questions],
+                    return_exceptions=return_exceptions,
+                )
 
-            reports = await asyncio.gather(
-                *[run_one(question) for question in questions],
-                return_exceptions=return_exceptions,
-            )
+            if self.folder_to_save_reports_to:
+                non_exception_reports = [
+                    report
+                    for report in reports
+                    if not isinstance(report, BaseException)
+                ]
+                questions_as_list = list(questions)
+                file_path = self._create_file_path_to_save_to(questions_as_list)
+                ForecastReport.save_object_list_to_file_path(
+                    non_exception_reports, file_path
+                )
 
-        if self.folder_to_save_reports_to:
-            non_exception_reports = [
-                report
-                for report in reports
-                if not isinstance(report, BaseException)
-            ]
-            questions_as_list = list(questions)
-            file_path = self._create_file_path_to_save_to(questions_as_list)
-            ForecastReport.save_object_list_to_file_path(
-                non_exception_reports, file_path
-            )
-
-        return reports
+            return reports
+        finally:
+            if local_crawl_parser_started:
+                try:
+                    if self._local_crawl_parser is not None:
+                        await self._local_crawl_parser.close()
+                finally:
+                    self._local_crawl_parser = None
+                    self._local_crawl_limits = None
 
     async def _gather_results_and_exceptions(self, coroutines):
         max_concurrent_tasks = _env_int("BOT_MAX_CONCURRENT_TASKS", 1)
@@ -2696,6 +2722,19 @@ class MetaculusBot(
             )
         return f"Unknown free research strategy: {strategy!r}"
 
+    @staticmethod
+    def _web_search_report_has_no_results(text: str) -> bool:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return True
+        no_result_markers = (
+            "no search results found",
+            "no usable search results found",
+            "no search results were found",
+            "no usable search results were found",
+        )
+        return any(marker in normalized[:300] for marker in no_result_markers)
+
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
             researcher = self.get_llm("researcher")
@@ -3505,6 +3544,42 @@ class MetaculusBot(
                                     )
                                 research = fallback_research
                         else:
+                            research = fallback_research
+                    elif self._web_search_report_has_no_results(research):
+                        exa_key = os.getenv("EXA_API_KEY", "").strip()
+                        exa_disabled = getattr(
+                            self, "_smart_searcher_disabled_reason", None
+                        )
+                        if exa_key and not exa_disabled:
+                            logger.warning(
+                                "TavilySearcher returned no usable results for %s. Falling back to Exa.",
+                                question.page_url,
+                            )
+                            try:
+                                exa_research = await SmartSearcher(
+                                    model=model_name,
+                                    temperature=0,
+                                    num_searches_to_run=max(1, num_searches_to_run),
+                                    num_sites_per_search=max(1, num_sites_per_search),
+                                    use_advanced_filters=use_advanced_filters,
+                                ).invoke(prompt)
+                                self._smart_searcher_consecutive_failures = 0
+                                research = (
+                                    fallback_research
+                                    if self._web_search_report_has_no_results(
+                                        exa_research
+                                    )
+                                    and fallback_research
+                                    else exa_research
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Exa fallback after empty Tavily result failed for %s. Error: %s",
+                                    question.page_url,
+                                    repr(e)[:300],
+                                )
+                                research = fallback_research or research
+                        elif fallback_research:
                             research = fallback_research
             elif isinstance(researcher, str) and researcher.startswith("smart-searcher"):
                 fallback_research = "\n\n".join(
