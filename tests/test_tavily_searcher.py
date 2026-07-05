@@ -2,6 +2,10 @@ import os
 import unittest
 from unittest.mock import patch
 
+from bot.search_telemetry import (
+    reset_search_provider_telemetry,
+    snapshot_search_provider_telemetry,
+)
 from bot.tavily_searcher import TavilySearcher
 
 
@@ -22,6 +26,11 @@ class _FakeResponse:
         return False
 
 
+class _FailingResponse(_FakeResponse):
+    def raise_for_status(self) -> None:
+        raise RuntimeError("tavily failed")
+
+
 class _FakeSession:
     def __init__(self, response: _FakeResponse) -> None:
         self._response = response
@@ -39,6 +48,12 @@ class _FakeSession:
 
 
 class TestTavilySearcher(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        reset_search_provider_telemetry()
+
+    async def asyncTearDown(self) -> None:
+        reset_search_provider_telemetry()
+
     async def test_requires_api_key(self) -> None:
         previous = os.environ.pop("TAVILY_API_KEY", None)
         self.addCleanup(
@@ -103,3 +118,34 @@ class TestTavilySearcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json_body.get("max_results"), 2)
         self.assertEqual(json_body.get("include_raw_content"), True)
         self.assertEqual(json_body.get("time_range"), "week")
+
+        telemetry = snapshot_search_provider_telemetry()
+        self.assertEqual(telemetry["tavily"]["requests"], 1)
+        self.assertEqual(telemetry["tavily"]["successes"], 1)
+        self.assertEqual(telemetry["tavily"]["failures"], 0)
+        self.assertEqual(telemetry["tavily"]["estimated_credits"], 1)
+        self.assertEqual(telemetry["tavily"]["raw_content_requests"], 1)
+        self.assertEqual(telemetry["tavily"]["basic_requests"], 1)
+
+    async def test_search_records_failed_request(self) -> None:
+        previous = os.environ.get("TAVILY_API_KEY")
+        os.environ["TAVILY_API_KEY"] = "tvly-test"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("TAVILY_API_KEY", previous)
+            if previous is not None
+            else os.environ.pop("TAVILY_API_KEY", None)
+        )
+
+        session = _FakeSession(_FailingResponse({}))
+
+        with patch("bot.tavily_searcher.aiohttp.ClientSession", return_value=session):
+            searcher = TavilySearcher(search_depth="advanced")
+            with self.assertRaises(RuntimeError):
+                await searcher.search(query="hello", max_results=3)
+
+        telemetry = snapshot_search_provider_telemetry()
+        self.assertEqual(telemetry["tavily"]["requests"], 1)
+        self.assertEqual(telemetry["tavily"]["successes"], 0)
+        self.assertEqual(telemetry["tavily"]["failures"], 1)
+        self.assertEqual(telemetry["tavily"]["estimated_credits"], 2)
+        self.assertEqual(telemetry["tavily"]["advanced_requests"], 1)

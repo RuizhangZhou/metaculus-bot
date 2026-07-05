@@ -11,6 +11,8 @@ import aiohttp
 from forecasting_tools import GeneralLlm, clean_indents
 from forecasting_tools.util.misc import fill_in_citations
 
+from bot.search_telemetry import record_tavily_search_request
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,11 +80,24 @@ class TavilySearcher:
         if self._time_range:
             payload["time_range"] = self._time_range
 
-        async with self._sem:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    response.raise_for_status()
-                    data: dict = await response.json()
+        data: dict = {}
+        success = False
+        try:
+            async with self._sem:
+                async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                    async with session.post(
+                        url, json=payload, headers=headers
+                    ) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                        success = True
+        finally:
+            record_tavily_search_request(
+                search_depth=self._search_depth,
+                max_results=max(1, int(max_results)),
+                include_raw_content=self._include_raw_content,
+                success=success,
+            )
 
         results: list[TavilySearchResult] = []
         for item in data.get("results") or []:
@@ -148,6 +163,11 @@ class TavilySmartSearcher:
 
         search_terms = await self._come_up_with_search_queries(prompt)
         results = await self._search(search_terms)
+        logger.info(
+            "TavilySmartSearcher completed searches: searches=%s deduped_results=%s",
+            len(search_terms),
+            len(results),
+        )
         report = await self._compile_report(results, prompt)
         return self._link_citations(report, results)
 
