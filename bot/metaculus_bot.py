@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from bot.env import env_bool as _env_bool, env_float as _env_float, env_int as _env_int
 from bot.local_crawl_support import LocalCrawlSupportMixin
+from bot.search_telemetry import record_exa_fallback
 from bot.smart_searcher_circuit import SmartSearcherCircuitMixin
 from bot.tavily_searcher import TavilySmartSearcher
 from bot.tool_router import ToolRouterMixin, ToolRouterPlan
@@ -3330,8 +3331,10 @@ class MetaculusBot(
                                 num_sites_per_search=max(1, num_sites_per_search),
                                 use_advanced_filters=use_advanced_filters,
                             ).invoke(prompt)
+                            record_exa_fallback(success=True)
                             self._smart_searcher_consecutive_failures = 0
                         except Exception as e:
+                            record_exa_fallback(success=False)
                             logger.warning(
                                 "Exa fallback failed; continuing without web search for %s. Error: %s",
                                 question.page_url,
@@ -3487,8 +3490,10 @@ class MetaculusBot(
                                     num_sites_per_search=max(1, num_sites_per_search),
                                     use_advanced_filters=use_advanced_filters,
                                 ).invoke(prompt)
+                                record_exa_fallback(success=True)
                                 self._smart_searcher_consecutive_failures = 0
                             except BaseException as e:
+                                record_exa_fallback(success=False)
                                 if self._is_probably_exa_error(e):
                                     if self._is_exa_nonrecoverable_error(e):
                                         reason = f"nonrecoverable Exa error: {e.__class__.__name__}"
@@ -3563,6 +3568,7 @@ class MetaculusBot(
                                     num_sites_per_search=max(1, num_sites_per_search),
                                     use_advanced_filters=use_advanced_filters,
                                 ).invoke(prompt)
+                                record_exa_fallback(success=True)
                                 self._smart_searcher_consecutive_failures = 0
                                 research = (
                                     fallback_research
@@ -3573,6 +3579,7 @@ class MetaculusBot(
                                     else exa_research
                                 )
                             except Exception as e:
+                                record_exa_fallback(success=False)
                                 logger.warning(
                                     "Exa fallback after empty Tavily result failed for %s. Error: %s",
                                     question.page_url,
