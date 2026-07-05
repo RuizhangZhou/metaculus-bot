@@ -21,6 +21,7 @@ from typing import Any
 from typing import Literal
 from typing import TypeVar
 from typing import Sequence
+from urllib.parse import urlparse
 
 from bot.env import env_bool as _env_bool, env_float as _env_float, env_int as _env_int
 from bot.local_crawl_support import LocalCrawlSupportMixin
@@ -95,6 +96,154 @@ _RESEARCH_FORECAST_LINE_RE = re.compile(
 _FORECAST_PROBABILITY_PERCENT_RE = re.compile(
     r"Probability\s*:\s*(\d{1,3}(?:\.\d+)?)\s*%", re.IGNORECASE
 )
+
+
+class AzureResponsesLlm:
+    """Small OpenAI-compatible Azure Responses API wrapper for forecast calls."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        endpoint: str,
+        api_key: str,
+        api_version: str = "",
+        reasoning_effort: str = "",
+        timeout: float = 120.0,
+        allowed_tries: int = 2,
+        max_output_tokens: int | None = None,
+    ) -> None:
+        self.model = model
+        self.endpoint = endpoint.strip()
+        self.api_key = api_key
+        self.api_version = api_version.strip()
+        self.allowed_tries = allowed_tries
+        self.litellm_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "reasoning_effort": reasoning_effort,
+            "api_base": self._redacted_endpoint_label(self.endpoint),
+        }
+        self._timeout = timeout
+        self._reasoning_effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
+
+    @staticmethod
+    def _redacted_endpoint_label(endpoint: str) -> str:
+        parsed = urlparse(endpoint)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return "azure-responses"
+
+    @classmethod
+    def _candidate_urls(cls, endpoint: str, api_version: str) -> list[str]:
+        endpoint = endpoint.strip()
+        if not endpoint:
+            return []
+
+        parsed = urlparse(endpoint)
+        if parsed.scheme and parsed.netloc and parsed.path.endswith("/responses"):
+            return [endpoint]
+
+        base = endpoint.rstrip("/")
+        lower_base = base.lower()
+        urls: list[str] = []
+        if lower_base.endswith("/openai/v1"):
+            urls.append(f"{base}/responses")
+        elif "/openai/v1/" in lower_base:
+            urls.append(base)
+        elif "/openai/" in lower_base:
+            # User may have provided a pre-versioned Azure OpenAI path. Preserve it
+            # as a fallback candidate if it is already close to the responses route.
+            urls.append(base)
+        else:
+            urls.append(f"{base}/openai/v1/responses")
+            if api_version:
+                urls.append(f"{base}/openai/responses?api-version={api_version}")
+        deduped: list[str] = []
+        for url in urls:
+            if url not in deduped:
+                deduped.append(url)
+        return deduped
+
+    @staticmethod
+    def _extract_text(data: Any) -> str:
+        if isinstance(data, dict):
+            output_text = data.get("output_text")
+            if isinstance(output_text, str) and output_text.strip():
+                return output_text
+            texts: list[str] = []
+            for item in data.get("output", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content", []) or []:
+                    if not isinstance(content, dict):
+                        continue
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        texts.append(text)
+                    elif isinstance(text, dict) and isinstance(text.get("value"), str):
+                        texts.append(text["value"])
+            if texts:
+                return "\n".join(texts)
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    return message["content"]
+        return json.dumps(data, ensure_ascii=False)
+
+    def _request_once(self, prompt: str) -> str:
+        urls = self._candidate_urls(self.endpoint, self.api_version)
+        if not urls:
+            raise ValueError("AZURE_OPENAI_ENDPOINT is not set")
+
+        body: dict[str, Any] = {
+            "model": self.model.removeprefix("azure/"),
+            "input": prompt,
+        }
+        if self._reasoning_effort:
+            body["reasoning"] = {"effort": self._reasoning_effort}
+        if self._max_output_tokens and self._max_output_tokens > 0:
+            body["max_output_tokens"] = self._max_output_tokens
+
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": self.api_key,
+        }
+        last_error: BaseException | None = None
+        for url in urls:
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=body,
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                return self._extract_text(response.json())
+            except requests.HTTPError as e:
+                last_error = e
+                if response.status_code != 404:
+                    raise
+            except BaseException as e:
+                last_error = e
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Azure Responses API failed without an exception")
+
+    async def invoke(self, prompt: str) -> str:
+        last_error: BaseException | None = None
+        for attempt in range(max(1, int(self.allowed_tries))):
+            try:
+                return await asyncio.to_thread(self._request_once, prompt)
+            except BaseException as e:
+                last_error = e
+                if attempt + 1 >= max(1, int(self.allowed_tries)):
+                    break
+                await asyncio.sleep(min(2 ** attempt, 8))
+        assert last_error is not None
+        raise last_error
 
 
 def _extract_probability_percent(text: str) -> float | None:
@@ -211,6 +360,8 @@ class MetaculusBot(
         safe: dict[str, str | dict[str, Any] | None] = {}
         for purpose, llm in self._llms.items():
             if isinstance(llm, GeneralLlm):
+                safe[purpose] = llm.model
+            elif isinstance(llm, AzureResponsesLlm):
                 safe[purpose] = llm.model
             else:
                 safe[purpose] = llm
@@ -378,40 +529,41 @@ class MetaculusBot(
         Automatic post-processing for binary forecasts.
 
         - Shrinks away from overconfident extremes (log score is harsh near 0/1).
-        - If community prediction is available, shrink deviations toward it unless we have high confidence.
-
-        No .env knobs required: defaults are hardcoded + depend on a simple confidence heuristic.
+        - If community prediction is available, shrink deviations toward it.
+        - If community prediction is NOT available, skip the CP blend entirely
+          (do not invent a fake anchor at 0.5).
         """
 
         p = self._clamp01(float(p), lo=1e-6, hi=1 - 1e-6)
-        cp = getattr(question, "community_prediction_at_access_time", None)
-        if cp is None:
-            cp = 0.5
-        cp = self._clamp01(float(cp), lo=1e-6, hi=1 - 1e-6)
+        cp_raw = getattr(question, "community_prediction_at_access_time", None)
+        has_cp = cp_raw is not None and cp_raw == cp_raw  # also rejects NaN
 
         confidence = self._estimate_forecast_confidence(
             question=question, research=research, reasoning=reasoning
         )
         days_until_known = self._days_until_known(question)
 
-        trust = 0.15 + 0.35 * confidence  # [~0.20, ~0.47] — lean toward CP
-        if days_until_known is not None:
-            if days_until_known <= 7:
-                trust += 0.05
-            elif days_until_known >= 365:
-                trust -= 0.10
-            elif days_until_known >= 180:
-                trust -= 0.06
-            elif days_until_known >= 90:
-                trust -= 0.03
-        trust = float(min(0.60, max(0.10, trust)))
+        if has_cp:
+            cp = self._clamp01(float(cp_raw), lo=1e-6, hi=1 - 1e-6)
+            trust = 0.15 + 0.35 * confidence
+            if days_until_known is not None:
+                if days_until_known <= 7:
+                    trust += 0.05
+                elif days_until_known >= 365:
+                    trust -= 0.10
+                elif days_until_known >= 180:
+                    trust -= 0.06
+                elif days_until_known >= 90:
+                    trust -= 0.03
+            trust = float(min(0.60, max(0.10, trust)))
 
-        cp_logit = self._logit(cp)
-        p_logit = self._logit(p)
-        calibrated_logit = cp_logit + trust * (p_logit - cp_logit)
-        calibrated_p = self._sigmoid(calibrated_logit)
+            cp_logit = self._logit(cp)
+            p_logit = self._logit(p)
+            calibrated_logit = cp_logit + trust * (p_logit - cp_logit)
+            calibrated_p = self._sigmoid(calibrated_logit)
+        else:
+            calibrated_p = p
 
-        # Dynamic clamp: farther from 0/1 when uncertain or long-horizon.
         min_p = 0.01 + 0.04 * (1.0 - confidence)
         if days_until_known is not None and days_until_known >= 180:
             min_p += 0.01
@@ -421,9 +573,14 @@ class MetaculusBot(
         max_p = 1.0 - min_p
 
         calibrated_p = self._clamp01(calibrated_p, lo=min_p, hi=max_p)
-        logger.info(
-            f"{context}: calibrated binary p={p:.4f} -> {calibrated_p:.4f} (cp={cp:.4f}, conf={confidence:.2f}, trust={trust:.2f})."
-        )
+        if has_cp:
+            logger.info(
+                f"{context}: calibrated binary p={p:.4f} -> {calibrated_p:.4f} (cp={cp:.4f}, conf={confidence:.2f}, trust={trust:.2f})."
+            )
+        else:
+            logger.info(
+                f"{context}: calibrated binary p={p:.4f} -> {calibrated_p:.4f} (no CP available, clamp only, conf={confidence:.2f})."
+            )
         return calibrated_p
 
     @staticmethod
@@ -644,6 +801,107 @@ class MetaculusBot(
             deduped.append(part)
         return deduped
 
+    @classmethod
+    def _first_csv_env(cls, name: str) -> str:
+        values = cls._parse_csv_env(name)
+        return values[0] if values else ""
+
+    @staticmethod
+    def _env_first(*names: str) -> str:
+        for name in names:
+            value = os.getenv(name, "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _azure_api_mode() -> str:
+        return os.getenv("AZURE_OPENAI_API_MODE", "responses").strip().lower()
+
+    @staticmethod
+    def _normalize_reasoning_effort(raw: str | None) -> str:
+        value = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "none": "",
+            "off": "",
+            "false": "",
+            "0": "",
+            "minimal": "minimal",
+            "min": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "med": "medium",
+            "high": "high",
+            "extra_high": "xhigh",
+            "extra": "xhigh",
+            "x_high": "xhigh",
+            "xhigh": "xhigh",
+        }
+        return aliases.get(value, value)
+
+    @staticmethod
+    def _known_reasoning_model(model_name: str) -> bool:
+        lower = model_name.lower()
+        return any(
+            marker in lower
+            for marker in (
+                "gpt-5",
+                "gpt-oss",
+                "mistral-small-4-119b-2603",
+            )
+        )
+
+    @classmethod
+    def _default_reasoning_effort_for_model(cls, model_name: str) -> str:
+        lower = model_name.lower()
+        if "gpt-5.5" in lower or "gpt-5.4" in lower:
+            return "xhigh"
+        if "gpt-oss-120b" in lower:
+            return "high"
+        if "mistral-small-4-119b-2603" in lower:
+            return "high"
+        if cls._known_reasoning_model(model_name):
+            return "high"
+        return ""
+
+    @classmethod
+    def _reasoning_kwargs(
+        cls,
+        *,
+        model_name: str,
+        effort_env: str,
+        default_effort: str = "",
+    ) -> dict:
+        default_enable_reasoning = cls._known_reasoning_model(model_name)
+        enable_reasoning = _env_bool("BOT_ENABLE_REASONING", default_enable_reasoning)
+        if not enable_reasoning:
+            return {}
+
+        effort_raw = os.getenv(effort_env, "")
+        if not effort_raw and effort_env in {
+            "BOT_PARSER_REASONING_EFFORT",
+            "BOT_ROUTER_REASONING_EFFORT",
+            "BOT_SUMMARIZER_REASONING_EFFORT",
+            "BOT_RESEARCH_REASONING_EFFORT",
+        }:
+            effort_raw = os.getenv("BOT_CHEAP_REASONING_EFFORT", "")
+        effort = cls._normalize_reasoning_effort(
+            effort_raw
+            or os.getenv("BOT_REASONING_EFFORT", "")
+            or cls._default_reasoning_effort_for_model(model_name)
+            or default_effort
+        )
+        if model_name.lower().startswith("openrouter/"):
+            reasoning: dict[str, object] = {"enabled": True}
+            if effort:
+                reasoning["effort"] = effort
+            return {"extra_body": {"reasoning": reasoning}}
+        if effort:
+            # LiteLLM/OpenAI-compatible providers use OpenAI's reasoning_effort
+            # parameter where supported. Leave unset for cheap non-reasoning models.
+            return {"reasoning_effort": effort}
+        return {}
+
     @staticmethod
     def _normalize_url_for_compare(url: str) -> str:
         return url.strip().rstrip("/")
@@ -669,8 +927,43 @@ class MetaculusBot(
             provider = base_model.split("/", 1)[0] or provider
         return f"{provider}/{fallback}"
 
+    @staticmethod
+    def _looks_like_scarce_kiconnect_model(model_name: str) -> bool:
+        lower = model_name.strip().lower()
+        return lower in {"gpt-5.2", "gpt-5.5", "gpt-5.5_none"} or lower.startswith(
+            ("gpt-5.2", "gpt-5.5")
+        )
+
+    @classmethod
+    def _kiconnect_fallback_models_for_purpose(
+        cls, purpose: str | None
+    ) -> list[str]:
+        purpose_key = (purpose or "").strip().lower()
+        cheap_purposes = {"parser", "router", "summarizer", "researcher"}
+        env_names: list[str] = []
+        if purpose_key in cheap_purposes:
+            env_names.append("KICONNECT_CHEAP_MODEL_FALLBACKS")
+        elif purpose_key == "default":
+            env_names.append("KICONNECT_FORECAST_MODEL_FALLBACKS")
+        elif purpose_key == "high_value":
+            env_names.append("KICONNECT_HIGH_MODEL_FALLBACKS")
+        env_names.append("KICONNECT_MODEL_FALLBACKS")
+
+        for env_name in env_names:
+            models = cls._parse_csv_env(env_name)
+            if not models:
+                continue
+            if env_name == "KICONNECT_MODEL_FALLBACKS" and purpose_key in cheap_purposes:
+                models = [
+                    model
+                    for model in models
+                    if not cls._looks_like_scarce_kiconnect_model(model)
+                ]
+            return models
+        return []
+
     def _make_kiconnect_fallback_llms_from_llm(
-        self, base_llm: GeneralLlm
+        self, base_llm: GeneralLlm, *, purpose: str | None = None
     ) -> list[GeneralLlm]:
         if not _env_bool("BOT_ENABLE_FALLBACK", True):
             return []
@@ -678,7 +971,7 @@ class MetaculusBot(
         if not self._is_kiconnect_llm(base_llm):
             return []
 
-        fallback_models = self._parse_csv_env("KICONNECT_MODEL_FALLBACKS")
+        fallback_models = self._kiconnect_fallback_models_for_purpose(purpose)
         if not fallback_models:
             return []
 
@@ -689,11 +982,14 @@ class MetaculusBot(
         clone_kwargs: dict = {}
         for key in (
             "base_url",
+            "api_base",
             "api_key",
             "api_version",
+            "azure_endpoint",
             "extra_headers",
             "extra_body",
             "custom_llm_provider",
+            "reasoning_effort",
             "ssl_verify",
         ):
             if base_llm.litellm_kwargs.get(key) is not None:
@@ -722,18 +1018,36 @@ class MetaculusBot(
 
     def _make_kiconnect_fallback_llms(self, purpose: str) -> list[GeneralLlm]:
         base_llm = self.get_llm(purpose, "llm")
-        return self._make_kiconnect_fallback_llms_from_llm(base_llm)
+        return self._make_kiconnect_fallback_llms_from_llm(
+            base_llm, purpose=purpose
+        )
 
     @staticmethod
     def _fallback_model_name_for(model_name: str) -> str | None:
         configured = os.getenv("BOT_FALLBACK_MODEL", "").strip()
         if configured:
             return configured
+        azure_key = (
+            os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+            or os.getenv("AZURE_API_KEY", "").strip()
+        )
+        azure_endpoint = (
+            os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+            or os.getenv("AZURE_API_BASE", "").strip()
+        )
+        azure_deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
+            or os.getenv("AZURE_OPENAI_MODEL", "").strip()
+            or os.getenv("AZURE_DEPLOYMENT_NAME", "").strip()
+        )
+        has_azure = bool(azure_key and azure_endpoint and azure_deployment)
+        if has_azure and "kiconnect" in model_name.lower():
+            return f"azure/{azure_deployment}"
         if model_name.endswith(":free"):
             return model_name[: -len(":free")]
         return None
 
-    def _make_fallback_llm(self, purpose: str) -> GeneralLlm | None:
+    def _make_fallback_llm(self, purpose: str) -> GeneralLlm | AzureResponsesLlm | None:
         if not _env_bool("BOT_ENABLE_FALLBACK", True):
             return None
 
@@ -748,7 +1062,47 @@ class MetaculusBot(
         temperature = base_llm.litellm_kwargs.get("temperature", 0.0)
 
         extra_kwargs: dict = {}
-        if base_llm.litellm_kwargs.get("base_url") is not None:
+        is_azure_fallback = fallback_model.lower().startswith("azure/")
+        if is_azure_fallback:
+            azure_key = (
+                os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+                or os.getenv("AZURE_API_KEY", "").strip()
+            )
+            azure_endpoint = (
+                os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+                or os.getenv("AZURE_API_BASE", "").strip()
+            )
+            azure_api_version = (
+                os.getenv("AZURE_OPENAI_API_VERSION", "").strip()
+                or os.getenv("AZURE_API_VERSION", "").strip()
+            )
+            if azure_key:
+                extra_kwargs["api_key"] = azure_key
+            if azure_endpoint:
+                extra_kwargs["api_base"] = azure_endpoint
+            if azure_api_version:
+                extra_kwargs["api_version"] = azure_api_version
+            if self._azure_api_mode() != "chat":
+                reasoning_effort = (
+                    base_llm.litellm_kwargs.get("reasoning_effort")
+                    if hasattr(base_llm, "litellm_kwargs")
+                    else None
+                )
+                if not reasoning_effort:
+                    reasoning_effort = self._default_reasoning_effort_for_model(
+                        fallback_model
+                    )
+                return AzureResponsesLlm(
+                    model=fallback_model,
+                    endpoint=azure_endpoint,
+                    api_key=azure_key,
+                    api_version=azure_api_version,
+                    reasoning_effort=str(reasoning_effort or ""),
+                    timeout=fallback_timeout,
+                    allowed_tries=fallback_allowed_tries,
+                    max_output_tokens=_env_int("BOT_MAX_TOKENS", 0) or None,
+                )
+        elif base_llm.litellm_kwargs.get("base_url") is not None:
             fallback_provider = (
                 fallback_model.split("/", 1)[0] if "/" in fallback_model else "openai"
             )
@@ -758,6 +1112,10 @@ class MetaculusBot(
                     extra_kwargs["api_key"] = base_llm.litellm_kwargs["api_key"]
         if base_llm.litellm_kwargs.get("extra_body") is not None:
             extra_kwargs["extra_body"] = base_llm.litellm_kwargs["extra_body"]
+        if base_llm.litellm_kwargs.get("reasoning_effort") is not None:
+            extra_kwargs["reasoning_effort"] = base_llm.litellm_kwargs[
+                "reasoning_effort"
+            ]
 
         return GeneralLlm(
             model=fallback_model,
@@ -770,15 +1128,37 @@ class MetaculusBot(
     async def _invoke_llm_with_transient_fallback(
         self, purpose: str, prompt: str, *, context: str
     ) -> str:
+        base_purpose = purpose
         base_llm = self.get_llm(purpose, "llm")
+        if purpose == "default":
+            high_value_mode = (
+                os.getenv("BOT_HIGH_VALUE_FORECAST_MODE", "off").strip().lower()
+            )
+            if high_value_mode in {"1", "true", "yes", "always", "quota_first"}:
+                try:
+                    high_value_llm = self.get_llm("high_value", "llm")
+                    if high_value_llm is not None:
+                        base_purpose = "high_value"
+                        base_llm = high_value_llm
+                except Exception:
+                    pass
         try:
             return await base_llm.invoke(prompt)
         except BaseException as e:
             if not self._is_transient_provider_error(e):
                 raise
-            fallback_llms: list[GeneralLlm] = []
-            fallback_llms.extend(self._make_kiconnect_fallback_llms(purpose))
-            configured_fallback = self._make_fallback_llm(purpose)
+            fallback_llms: list[GeneralLlm | AzureResponsesLlm] = []
+            fallback_llms.extend(self._make_kiconnect_fallback_llms(base_purpose))
+            if base_purpose != purpose:
+                try:
+                    regular_llm = self.get_llm(purpose, "llm")
+                    regular_name = getattr(regular_llm, "model", str(regular_llm))
+                    base_name = getattr(base_llm, "model", str(base_llm))
+                    if regular_name != base_name:
+                        fallback_llms.append(regular_llm)
+                except Exception:
+                    pass
+            configured_fallback = self._make_fallback_llm(base_purpose)
             if configured_fallback is not None:
                 fallback_llms.append(configured_fallback)
             if not fallback_llms:
@@ -871,15 +1251,21 @@ class MetaculusBot(
     @classmethod
     def _llm_config_defaults(cls) -> dict[str, str | GeneralLlm | None]:
         """
-        Defaults are cost-optimized for OpenRouter:
-        - Use a cheap *non-search* model for forecasting/parsing (many calls).
-        - Use a *search* model for research only (ideally 1 call per question).
+        Defaults are quality/cost tiered:
+        - Forecasting uses the strongest configured model (Azure GPT-5.4 if set).
+        - Parsing, routing, summarization, and search synthesis use cheap models.
+        - A scarce high-value model can be configured, but is not auto-spent.
 
         Env overrides:
-        - BOT_BASE_MODEL: non-search model (default: OpenRouter gpt-oss-120b:free)
-        - BOT_SEARCH_MODEL: web-search model (default: OpenRouter gpt-4o-mini-search-preview)
+        - BOT_FORECAST_MODEL: final prediction model (preferred)
+        - BOT_BASE_MODEL: legacy alias for BOT_FORECAST_MODEL
+        - BOT_CHEAP_MODEL: cheap model for parser/router/summarizer/research
+        - BOT_PARSER_MODEL, BOT_ROUTER_MODEL, BOT_SUMMARIZER_MODEL, BOT_RESEARCH_MODEL
+        - BOT_HIGH_VALUE_MODEL: scarce premium model kept available for experiments
+        - BOT_SEARCH_MODEL: web-search model fallback when no Tavily/Exa searcher is used
         - BOT_ENABLE_WEB_SEARCH: set to 0/false to disable research
-        - BOT_ENABLE_REASONING: set to 1/true to enable OpenRouter reasoning (default: true for gpt-oss models)
+        - BOT_ENABLE_REASONING: set to 0/false to disable reasoning parameters
+        - BOT_*_REASONING_EFFORT: minimal/low/medium/high/xhigh per tier
         - BOT_BASE_TIMEOUT_SECONDS: timeout for base model calls (default: 45)
         - BOT_BASE_ALLOWED_TRIES: retry count for base model (default: 1 if :free else 2)
         - BOT_ENABLE_FALLBACK: set to 0/false to disable fallback retries
@@ -891,11 +1277,12 @@ class MetaculusBot(
 
         single_model = os.getenv("BOT_SINGLE_MODEL", "").strip()
         if not single_model:
-            base_model = os.getenv("BOT_BASE_MODEL", "").strip()
-
             kiconnect_api_url = os.getenv("KICONNECT_API_URL", "").strip()
             kiconnect_api_key = os.getenv("KICONNECT_API_KEY", "").strip()
-            kiconnect_model = os.getenv("KICONNECT_MODEL", "").strip()
+            kiconnect_model = cls._first_csv_env("KICONNECT_MODEL")
+            kiconnect_forecast_model = cls._first_csv_env("KICONNECT_FORECAST_MODEL")
+            kiconnect_cheap_model = cls._first_csv_env("KICONNECT_CHEAP_MODEL")
+            kiconnect_high_model = cls._first_csv_env("KICONNECT_HIGH_MODEL")
             has_kiconnect = bool(
                 kiconnect_api_url and kiconnect_api_key and kiconnect_model
             )
@@ -905,13 +1292,26 @@ class MetaculusBot(
                     "BOT_REQUIRE_KICONNECT=true but KICONNECT_API_URL/KICONNECT_API_KEY/KICONNECT_MODEL are not all set."
                 )
 
-            base_llm_kwargs: dict = {}
-            if not base_model and has_kiconnect:
+            azure_api_key = cls._env_first("AZURE_OPENAI_API_KEY", "AZURE_API_KEY")
+            azure_endpoint = cls._env_first(
+                "AZURE_OPENAI_ENDPOINT", "AZURE_API_BASE"
+            )
+            azure_api_version = cls._env_first(
+                "AZURE_OPENAI_API_VERSION", "AZURE_API_VERSION"
+            )
+            azure_deployment = cls._env_first(
+                "AZURE_OPENAI_DEPLOYMENT",
+                "AZURE_OPENAI_MODEL",
+                "AZURE_DEPLOYMENT_NAME",
+            )
+            has_azure = bool(azure_api_key and azure_endpoint and azure_deployment)
+
+            ssl_verify = cls._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
+            kiconnect_kwargs: dict = {}
+            if has_kiconnect:
                 # Treat KIconnect as an OpenAI-compatible /chat/completions endpoint.
                 # Example base_url: https://.../api/v1
-                base_model = f"openai/{kiconnect_model}"
-                ssl_verify = cls._parse_ssl_verify_env("KICONNECT_SSL_VERIFY")
-                base_llm_kwargs = {
+                kiconnect_kwargs = {
                     "base_url": kiconnect_api_url,
                     "api_key": kiconnect_api_key,
                     # Ensure LiteLLM treats unknown model names as OpenAI-compatible
@@ -919,15 +1319,127 @@ class MetaculusBot(
                     "custom_llm_provider": "openai",
                 }
                 if ssl_verify is not None:
-                    base_llm_kwargs["ssl_verify"] = ssl_verify
+                    kiconnect_kwargs["ssl_verify"] = ssl_verify
 
-            if not base_model:
+            azure_kwargs: dict = {}
+            if has_azure:
+                azure_kwargs = {
+                    "api_key": azure_api_key,
+                    "api_base": azure_endpoint,
+                }
+                if azure_api_version:
+                    azure_kwargs["api_version"] = azure_api_version
+
+            def public_cheap_model() -> str:
                 if os.getenv("OPENROUTER_API_KEY"):
-                    base_model = "openrouter/openai/gpt-oss-120b:free"
-                elif os.getenv("OPENAI_API_KEY"):
-                    base_model = "openai/gpt-4o-mini"
-                else:
-                    base_model = "gpt-4o-mini"
+                    return "openrouter/openai/gpt-oss-120b:free"
+                if os.getenv("OPENAI_API_KEY"):
+                    return "openai/gpt-4o-mini"
+                return "gpt-4o-mini"
+
+            def public_forecast_model() -> str:
+                if os.getenv("OPENROUTER_API_KEY"):
+                    return "openrouter/openai/gpt-oss-120b:free"
+                if os.getenv("OPENAI_API_KEY"):
+                    return "openai/gpt-4o"
+                return public_cheap_model()
+
+            def kiconnect_prefixed(model: str) -> str:
+                return f"kiconnect/{model}" if model else ""
+
+            cheap_model_raw = os.getenv("BOT_CHEAP_MODEL", "").strip()
+            if not cheap_model_raw and kiconnect_cheap_model:
+                cheap_model_raw = kiconnect_prefixed(kiconnect_cheap_model)
+            if not cheap_model_raw and has_kiconnect:
+                cheap_model_raw = kiconnect_prefixed("gpt-oss-120b")
+            if not cheap_model_raw:
+                cheap_model_raw = public_cheap_model()
+
+            forecast_model_raw = (
+                os.getenv("BOT_FORECAST_MODEL", "").strip()
+                or os.getenv("BOT_BASE_MODEL", "").strip()
+            )
+            if not forecast_model_raw and kiconnect_forecast_model:
+                forecast_model_raw = kiconnect_prefixed(kiconnect_forecast_model)
+            if not forecast_model_raw and has_kiconnect:
+                forecast_model_raw = kiconnect_prefixed("gpt-5.4-mini")
+            if not forecast_model_raw and has_azure:
+                forecast_model_raw = f"azure/{azure_deployment}"
+            if not forecast_model_raw:
+                forecast_model_raw = public_forecast_model()
+
+            high_value_model_raw = os.getenv("BOT_HIGH_VALUE_MODEL", "").strip()
+            if not high_value_model_raw and kiconnect_high_model:
+                high_value_model_raw = kiconnect_prefixed(kiconnect_high_model)
+            if (
+                not high_value_model_raw
+                and kiconnect_model.lower() in {"gpt-5.2", "gpt-5.5", "gpt-5.5_none"}
+            ):
+                high_value_model_raw = kiconnect_prefixed(kiconnect_model)
+
+            def resolve_model_spec(raw_model: str) -> tuple[str, dict, str, str]:
+                raw_model = raw_model.strip()
+                lower = raw_model.lower()
+                if lower.startswith("kiconnect:"):
+                    deployment = raw_model.split(":", 1)[1].strip()
+                    if not deployment:
+                        deployment = kiconnect_model
+                    model_name = (
+                        deployment if "/" in deployment else f"openai/{deployment}"
+                    )
+                    return model_name, dict(kiconnect_kwargs), "kiconnect", deployment
+                if lower.startswith("kiconnect/"):
+                    deployment = raw_model.split("/", 1)[1].strip()
+                    if not deployment:
+                        deployment = kiconnect_model
+                    model_name = (
+                        deployment if "/" in deployment else f"openai/{deployment}"
+                    )
+                    return model_name, dict(kiconnect_kwargs), "kiconnect", deployment
+                if lower.startswith("azure/"):
+                    deployment = raw_model.split("/", 1)[1].strip()
+                    return raw_model, dict(azure_kwargs), "azure", deployment
+                return raw_model, {}, "direct", raw_model
+
+            def make_llm(
+                raw_model: str,
+                *,
+                temperature: float,
+                timeout: float,
+                allowed_tries: int,
+                effort_env: str,
+                default_effort: str,
+            ) -> tuple[GeneralLlm | AzureResponsesLlm, str, str, str]:
+                model_name, provider_kwargs, source, deployment = resolve_model_spec(
+                    raw_model
+                )
+                reasoning_kwargs = cls._reasoning_kwargs(
+                    model_name=model_name,
+                    effort_env=effort_env,
+                    default_effort=default_effort,
+                )
+                if source == "azure" and cls._azure_api_mode() != "chat":
+                    llm = AzureResponsesLlm(
+                        model=model_name,
+                        endpoint=azure_endpoint,
+                        api_key=azure_api_key,
+                        api_version=azure_api_version,
+                        reasoning_effort=str(
+                            reasoning_kwargs.get("reasoning_effort") or ""
+                        ),
+                        timeout=timeout,
+                        allowed_tries=allowed_tries,
+                        max_output_tokens=_env_int("BOT_MAX_TOKENS", 0) or None,
+                    )
+                    return llm, source, deployment, model_name
+                llm = GeneralLlm(
+                    model=model_name,
+                    temperature=temperature,
+                    timeout=timeout,
+                    allowed_tries=allowed_tries,
+                    **{**provider_kwargs, **reasoning_kwargs},
+                )
+                return llm, source, deployment, model_name
 
             search_model = os.getenv("BOT_SEARCH_MODEL", "").strip()
             if not search_model:
@@ -936,76 +1448,119 @@ class MetaculusBot(
                 elif os.getenv("OPENAI_API_KEY"):
                     search_model = "openai/gpt-4o-mini-search-preview"
                 else:
-                    search_model = base_model
+                    search_model = cheap_model_raw
 
             enable_web_search = _env_bool("BOT_ENABLE_WEB_SEARCH", True)
 
             base_timeout = float(_env_int("BOT_BASE_TIMEOUT_SECONDS", 45))
-            base_allowed_tries_default = 1 if base_model.endswith(":free") else 2
+            forecast_timeout = float(
+                _env_int("BOT_FORECAST_TIMEOUT_SECONDS", int(base_timeout))
+            )
+            cheap_timeout = float(_env_int("BOT_CHEAP_TIMEOUT_SECONDS", int(base_timeout)))
+            base_allowed_tries_default = (
+                1 if forecast_model_raw.endswith(":free") else 2
+            )
             base_allowed_tries = _env_int(
                 "BOT_BASE_ALLOWED_TRIES", base_allowed_tries_default
             )
+            forecast_allowed_tries = _env_int(
+                "BOT_FORECAST_ALLOWED_TRIES", base_allowed_tries
+            )
+            cheap_allowed_tries = _env_int("BOT_CHEAP_ALLOWED_TRIES", 1)
 
-            # Enable reasoning for OpenRouter models (gpt-oss, etc.)
-            # Default: enabled for gpt-oss models
-            default_enable_reasoning = "gpt-oss" in base_model.lower()
-            enable_reasoning = _env_bool("BOT_ENABLE_REASONING", default_enable_reasoning)
+            forecast_llm, _, _, _ = make_llm(
+                forecast_model_raw,
+                temperature=0.3,
+                timeout=forecast_timeout,
+                allowed_tries=forecast_allowed_tries,
+                effort_env="BOT_FORECAST_REASONING_EFFORT",
+                default_effort="high",
+            )
+            summarizer_llm, _, _, _ = make_llm(
+                os.getenv("BOT_SUMMARIZER_MODEL", "").strip() or cheap_model_raw,
+                temperature=0.0,
+                timeout=cheap_timeout,
+                allowed_tries=cheap_allowed_tries,
+                effort_env="BOT_SUMMARIZER_REASONING_EFFORT",
+                default_effort="low",
+            )
+            parser_llm, _, _, _ = make_llm(
+                os.getenv("BOT_PARSER_MODEL", "").strip() or cheap_model_raw,
+                temperature=0.0,
+                timeout=cheap_timeout,
+                allowed_tries=cheap_allowed_tries,
+                effort_env="BOT_PARSER_REASONING_EFFORT",
+                default_effort="low",
+            )
+            router_llm, _, _, _ = make_llm(
+                os.getenv("BOT_ROUTER_MODEL", "").strip()
+                or os.getenv("BOT_PARSER_MODEL", "").strip()
+                or cheap_model_raw,
+                temperature=0.0,
+                timeout=cheap_timeout,
+                allowed_tries=cheap_allowed_tries,
+                effort_env="BOT_ROUTER_REASONING_EFFORT",
+                default_effort="minimal",
+            )
+            search_llm, _, _, _ = make_llm(
+                search_model,
+                temperature=0.0,
+                timeout=cheap_timeout,
+                allowed_tries=cheap_allowed_tries,
+                effort_env="BOT_RESEARCH_REASONING_EFFORT",
+                default_effort="high",
+            )
+            research_model_raw = (
+                os.getenv("BOT_RESEARCH_MODEL", "").strip()
+                or os.getenv("BOT_SEARCH_SYNTHESIS_MODEL", "").strip()
+                or cheap_model_raw
+            )
+            _, research_source, research_deployment, research_model_name = make_llm(
+                research_model_raw,
+                temperature=0.0,
+                timeout=cheap_timeout,
+                allowed_tries=cheap_allowed_tries,
+                effort_env="BOT_RESEARCH_REASONING_EFFORT",
+                default_effort="high",
+            )
 
-            # Extra body for OpenRouter reasoning
-            extra_kwargs: dict = {}
-            if enable_reasoning and "openrouter/" in base_model.lower():
-                extra_kwargs["extra_body"] = {"reasoning": {"enabled": True}}
-
-            # If using KIconnect, reuse base_url/api_key for all non-search LLM calls.
-            merged_base_kwargs = {**base_llm_kwargs, **extra_kwargs}
+            def searcher_model_spec() -> str:
+                if research_source == "kiconnect":
+                    deployment = research_deployment
+                    if deployment.lower().startswith("openai/"):
+                        deployment = deployment.split("/", 1)[1]
+                    return f"kiconnect/{deployment}" if deployment else "kiconnect"
+                return research_model_name
 
             researcher: str | GeneralLlm
             if enable_web_search and os.getenv("TAVILY_API_KEY"):
                 # Prefer Tavily first (monthly free-tier reset) + local SmartSearcher-like flow
                 # (no paid "search-preview" models required).
-                researcher = (
-                    "tavily-searcher/kiconnect"
-                    if has_kiconnect
-                    else "tavily-searcher/openrouter/openai/gpt-oss-120b:free"
-                )
+                researcher = f"tavily-searcher/{searcher_model_spec()}"
             elif enable_web_search and os.getenv("EXA_API_KEY"):
                 # Fall back to Exa + SmartSearcher (often a one-time free credit pool).
-                researcher = (
-                    "smart-searcher/kiconnect"
-                    if has_kiconnect
-                    else "smart-searcher/openrouter/openai/gpt-oss-120b:free"
-                )
+                researcher = f"smart-searcher/{searcher_model_spec()}"
             else:
-                researcher = (
-                    GeneralLlm(model=search_model, temperature=0.0)
-                    if enable_web_search
-                    else "no_research"
-                )
+                researcher = search_llm if enable_web_search else "no_research"
 
-            return {
-                "default": GeneralLlm(
-                    model=base_model,
-                    temperature=0.3,
-                    timeout=base_timeout,
-                    allowed_tries=base_allowed_tries,
-                    **merged_base_kwargs,
-                ),
-                "summarizer": GeneralLlm(
-                    model=base_model,
-                    temperature=0.0,
-                    timeout=base_timeout,
-                    allowed_tries=base_allowed_tries,
-                    **merged_base_kwargs,
-                ),
-                "parser": GeneralLlm(
-                    model=base_model,
-                    temperature=0.0,
-                    timeout=base_timeout,
-                    allowed_tries=base_allowed_tries,
-                    **merged_base_kwargs,
-                ),
+            llms: dict[str, str | GeneralLlm | None] = {
+                "default": forecast_llm,
+                "summarizer": summarizer_llm,
+                "parser": parser_llm,
+                "router": router_llm,
                 "researcher": researcher,
             }
+            if high_value_model_raw:
+                high_value_llm, _, _, _ = make_llm(
+                    high_value_model_raw,
+                    temperature=0.2,
+                    timeout=forecast_timeout,
+                    allowed_tries=forecast_allowed_tries,
+                    effort_env="BOT_HIGH_VALUE_REASONING_EFFORT",
+                    default_effort="xhigh",
+                )
+                llms["high_value"] = high_value_llm
+            return llms
 
         # Single-model mode (debug/experiments).
         default_llm = GeneralLlm(model=single_model, temperature=0.3)
@@ -1015,6 +1570,7 @@ class MetaculusBot(
             "summarizer": deterministic_llm,
             "researcher": deterministic_llm,
             "parser": deterministic_llm,
+            "router": deterministic_llm,
         }
 
     ################################# CONCURRENCY ###################################
@@ -2484,14 +3040,15 @@ class MetaculusBot(
             web_search_instructions = (
                 clean_indents(
                     """
-                    Web search guidance:
-                    - Prefer NOT to browse if you already have sufficient, high-confidence information from the question + general knowledge.
-                    - If browsing is needed, try to use at most ONE web-search request total for this question.
-                    - Make it a single broad query that covers (1) latest status/key events and (2) any relevant prediction markets.
+                    Web search guidance — use a STRUCTURED multi-query approach:
+                    1. Current status query: Search for the latest developments directly relevant to the resolution criteria (e.g., "[topic] latest news 2025/2026").
+                    2. Official/primary source query: If the resolution criteria names a specific organization, dataset, or publication, search for that source directly.
+                    3. Prediction market query: Search for relevant prediction markets (Polymarket, Kalshi, Manifold, Metaculus community). Report market-implied probability as a percentage with a direct link if found. If not found, say so explicitly.
+                    4. Counter-evidence query (optional): If your initial findings strongly point one direction (>85% or <15%), search for evidence against that conclusion to avoid confirmation bias.
 
-                    Find any relevant prediction markets (Polymarket, Kalshi, Manifold, PredictIt, etc.).
-                    If you find a relevant market, report the current implied probability (or price) as a percentage and include a direct link.
-                    If you cannot find a relevant market, explicitly say so. Do not invent links or probabilities.
+                    You may use up to 3-5 separate web searches. Prefer targeted, specific queries over one broad query.
+                    For each piece of evidence, note the source date and reliability (primary source > news report > opinion > social media).
+                    Do not invent links or probabilities. If you cannot find a source, say so.
                     """
                 )
                 if uses_web_search
@@ -2672,9 +3229,26 @@ class MetaculusBot(
                     if "/" in model_name:
                         _, override_model = model_name.split("/", 1)
                         override_model = override_model.strip() or None
+                    search_model_name = override_model or kiconnect_model
+                    if "/" not in search_model_name:
+                        search_model_name = f"openai/{search_model_name}"
+                    search_llm_kwargs.update(
+                        self._reasoning_kwargs(
+                            model_name=search_model_name,
+                            effort_env="BOT_RESEARCH_REASONING_EFFORT",
+                            default_effort="low",
+                        )
+                    )
                     search_llm = GeneralLlm(
-                        model=f"openai/{override_model or kiconnect_model}",
+                        model=search_model_name,
                         temperature=0,
+                        timeout=float(
+                            _env_int(
+                                "BOT_CHEAP_TIMEOUT_SECONDS",
+                                _env_int("BOT_BASE_TIMEOUT_SECONDS", 45),
+                            )
+                        ),
+                        allowed_tries=_env_int("BOT_CHEAP_ALLOWED_TRIES", 1),
                         base_url=kiconnect_api_url,
                         api_key=kiconnect_api_key,
                         custom_llm_provider="openai",
@@ -2683,9 +3257,9 @@ class MetaculusBot(
                     model_name = search_llm
 
                 try:
-                    num_searches_to_run = int(os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2"))
+                    num_searches_to_run = int(os.getenv("SMART_SEARCHER_NUM_SEARCHES", "3"))
                 except Exception:
-                    num_searches_to_run = 2
+                    num_searches_to_run = 3
                 try:
                     num_sites_per_search = int(
                         os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
@@ -2746,7 +3320,9 @@ class MetaculusBot(
                     candidate_models: list[str | GeneralLlm] = [model_name]
                     if isinstance(model_name, GeneralLlm):
                         candidate_models.extend(
-                            self._make_kiconnect_fallback_llms_from_llm(model_name)
+                            self._make_kiconnect_fallback_llms_from_llm(
+                                model_name, purpose="researcher"
+                            )
                         )
                         fallback_search_model_name = self._fallback_model_name_for(
                             model_name.model
@@ -2954,9 +3530,26 @@ class MetaculusBot(
                     if "/" in model_name:
                         _, override_model = model_name.split("/", 1)
                         override_model = override_model.strip() or None
+                    search_model_name = override_model or kiconnect_model
+                    if "/" not in search_model_name:
+                        search_model_name = f"openai/{search_model_name}"
+                    search_llm_kwargs.update(
+                        self._reasoning_kwargs(
+                            model_name=search_model_name,
+                            effort_env="BOT_RESEARCH_REASONING_EFFORT",
+                            default_effort="low",
+                        )
+                    )
                     search_llm = GeneralLlm(
-                        model=f"openai/{override_model or kiconnect_model}",
+                        model=search_model_name,
                         temperature=0,
+                        timeout=float(
+                            _env_int(
+                                "BOT_CHEAP_TIMEOUT_SECONDS",
+                                _env_int("BOT_BASE_TIMEOUT_SECONDS", 45),
+                            )
+                        ),
+                        allowed_tries=_env_int("BOT_CHEAP_ALLOWED_TRIES", 1),
                         base_url=kiconnect_api_url,
                         api_key=kiconnect_api_key,
                         custom_llm_provider="openai",
@@ -2972,10 +3565,10 @@ class MetaculusBot(
                     if tavily_key and not tavily_disabled:
                         try:
                             num_searches_to_run = int(
-                                os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2")
+                                os.getenv("SMART_SEARCHER_NUM_SEARCHES", "3")
                             )
                         except Exception:
-                            num_searches_to_run = 2
+                            num_searches_to_run = 3
                         try:
                             num_sites_per_search = int(
                                 os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
@@ -3029,10 +3622,10 @@ class MetaculusBot(
                 else:
                     try:
                         num_searches_to_run = int(
-                            os.getenv("SMART_SEARCHER_NUM_SEARCHES", "2")
+                            os.getenv("SMART_SEARCHER_NUM_SEARCHES", "3")
                         )
                     except Exception:
-                        num_searches_to_run = 2
+                        num_searches_to_run = 3
                     try:
                         num_sites_per_search = int(
                             os.getenv("SMART_SEARCHER_NUM_SITES_PER_SEARCH", "10")
@@ -3051,7 +3644,9 @@ class MetaculusBot(
                     candidate_models: list[str | GeneralLlm] = [model_name]
                     if isinstance(model_name, GeneralLlm):
                         candidate_models.extend(
-                            self._make_kiconnect_fallback_llms_from_llm(model_name)
+                            self._make_kiconnect_fallback_llms_from_llm(
+                                model_name, purpose="researcher"
+                            )
                         )
                         fallback_search_model_name = self._fallback_model_name_for(
                             model_name.model

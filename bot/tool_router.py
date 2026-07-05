@@ -240,7 +240,10 @@ class ToolRouterMixin:
         looks_eps = self._looks_like_eps_question(question)
         looks_revenue = self._looks_like_revenue_question(question)
 
-        llm = self.get_llm("parser", "llm")
+        try:
+            llm = self.get_llm("router", "llm")
+        except Exception:
+            llm = self.get_llm("parser", "llm")
         schema = llm.get_schema_format_instructions_for_pydantic_type(ToolRouterPlan)
 
         max_local_chars = _env_int("BOT_TOOL_ROUTER_LOCAL_CONTEXT_MAX_CHARS", 6000)
@@ -263,18 +266,17 @@ class ToolRouterMixin:
             You are a tool-router for a forecasting research assistant.
 
             Goal: decide which retrieval sources to use for THIS Metaculus question, before writing the research report.
-            Cost priority (cheapest/most reliable first):
+            Source priority (accuracy first):
             1) Local crawl extracts (already available; do not request again).
             2) Free official deterministic sources (SEC/Nasdaq/FRED/BLS/BEA/EIA/Federal Register/NOAA/USGS) when relevant.
-            3) Web search (SmartSearcher/Exa or browsing models) only if needed.
+            3) Web search (SmartSearcher/Exa or browsing models) for current information.
 
             Rules:
-            - Prefer to AVOID web search if local extracts + official sources are sufficient to answer the resolution criteria.
+            - DEFAULT to enabling web search (use_web_search=true). Most tournament questions require up-to-date information that local extracts and official APIs alone cannot provide.
+            - Only set use_web_search=false if the question is purely about historical facts, mathematical/logical reasoning, or the local extracts already contain dated primary sources that fully answer the resolution criteria.
             - Only request SEC/Nasdaq tools if a valid US public-company ticker is available.
             - Prefer official sources when the resolution criteria references an agency or official publication
               (e.g., SEC filings, Federal Register rules, NOAA/NHC advisories, USGS feeds).
-            - If the question asks for the latest status of an event (e.g., law passed, conflict outcome, election result),
-              web search is usually required unless the local extracts already contain up-to-date primary sources.
             - Return ONLY the final JSON object, no other text.
 
             Output schema:

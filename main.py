@@ -524,17 +524,19 @@ if __name__ == "__main__":
             **llm_max_tokens_kwargs,
         )
     if args.parser_model and llms is not None:
-        llms["parser"] = GeneralLlm(
+        parser_llm = GeneralLlm(
             model=args.parser_model,
             temperature=0.0,
             timeout=60,
             allowed_tries=2,
             **llm_max_tokens_kwargs,
         )
+        llms["parser"] = parser_llm
+        llms["router"] = parser_llm
 
-    research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 3)
+    research_reports_per_question = _env_int("BOT_RESEARCH_REPORTS_PER_QUESTION", 1)
     predictions_per_research_report = _env_int(
-        "BOT_PREDICTIONS_PER_RESEARCH_REPORT", 5
+        "BOT_PREDICTIONS_PER_RESEARCH_REPORT", 3
     )
     if research_reports_per_question <= 0:
         raise SystemExit("BOT_RESEARCH_REPORTS_PER_QUESTION must be >= 1")
