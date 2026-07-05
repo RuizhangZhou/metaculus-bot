@@ -270,6 +270,41 @@ class PlaywrightWebPageParser:
     def _extract_main_text(html: str) -> str:
         if not html:
             return ""
+        return (
+            PlaywrightWebPageParser._extract_with_trafilatura(html)
+            or PlaywrightWebPageParser._extract_with_readability(html)
+        )
+
+    @staticmethod
+    def _extract_with_trafilatura(html: str) -> str:
+        if not html:
+            return ""
+        try:
+            import trafilatura  # type: ignore[import-not-found]
+        except Exception:
+            return ""
+
+        try:
+            extracted = trafilatura.extract(
+                html,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+            )
+        except TypeError:
+            try:
+                extracted = trafilatura.extract(html)
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+
+        return normalize_text(extracted or "")
+
+    @staticmethod
+    def _extract_with_readability(html: str) -> str:
+        if not html:
+            return ""
         try:
             from readability import Document  # type: ignore[import-not-found]
         except Exception:
@@ -287,7 +322,7 @@ class PlaywrightWebPageParser:
 
         try:
             root = lxml.html.fromstring(summary_html)
-            return root.text_content()
+            return normalize_text(root.text_content())
         except Exception:
             return ""
 

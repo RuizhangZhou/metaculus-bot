@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from local_web_crawl import (
     PlaywrightWebPageParser,
@@ -46,6 +48,43 @@ class TestTruncateText(unittest.TestCase):
 
 
 class TestReadabilityExtraction(unittest.TestCase):
+    def test_extract_main_text_prefers_trafilatura_when_available(self) -> None:
+        fake_trafilatura = SimpleNamespace(
+            extract=lambda html, **kwargs: " Article text from trafilatura. "
+        )
+
+        with patch.dict("sys.modules", {"trafilatura": fake_trafilatura}):
+            extracted = PlaywrightWebPageParser._extract_main_text(
+                "<html><body><article>Ignored fallback.</article></body></html>"
+            )
+
+        self.assertEqual(extracted, "Article text from trafilatura.")
+
+    def test_extract_main_text_falls_back_when_trafilatura_returns_empty(self) -> None:
+        try:
+            import readability  # noqa: F401
+            import lxml.html  # noqa: F401
+        except Exception:
+            self.skipTest("readability-lxml is not installed")
+
+        fake_trafilatura = SimpleNamespace(extract=lambda html, **kwargs: "")
+        html = """
+        <html>
+          <body>
+            <nav>Nav</nav>
+            <article>
+              <h1>Title</h1>
+              <p>Hello from readability.</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        with patch.dict("sys.modules", {"trafilatura": fake_trafilatura}):
+            extracted = PlaywrightWebPageParser._extract_main_text(html)
+
+        self.assertIn("Hello from readability.", extracted)
+
     def test_extract_main_text_returns_plain_text_when_available(self) -> None:
         try:
             import readability  # noqa: F401
