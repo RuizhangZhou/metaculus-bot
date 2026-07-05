@@ -12,6 +12,7 @@ from forecasting_tools import GeneralLlm, clean_indents
 from forecasting_tools.util.misc import fill_in_citations
 
 from bot.search_telemetry import record_tavily_search_request
+from bot.source_quality import format_source_quality_table
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,8 @@ class TavilySmartSearcher:
         if not search_result_context:
             return "No usable search results found for the query."
 
+        source_quality_table = format_source_quality_table(results)
+
         prompt = clean_indents(
             f"""
             Today is {datetime.now().strftime("%Y-%m-%d")}.
@@ -253,7 +256,13 @@ class TavilySmartSearcher:
             {search_result_context}
             <><><><><><><><><><><><>
 
+            Source quality assessment:
+            <><><><><><><><><><><><>
+            {source_quality_table}
+            <><><><><><><><><><><><>
+
             Please follow the instructions and use the search results to answer the question. Unless the instructions specify otherwise, cite your sources inline using [1], [2], etc and use markdown formatting.
+            Treat low-reliability or social/forum sources as leads rather than decisive evidence. Prefer official, primary, academic, and directly resolution-relevant sources when they conflict with secondary sources.
             """
         )
         return await self._llm.invoke(prompt)
