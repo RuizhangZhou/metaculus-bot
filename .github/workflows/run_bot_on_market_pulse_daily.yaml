@@ -64,6 +64,15 @@ jobs:
           virtualenvs-in-project: true
           installer-parallel: true
 
+      - name: Restore research cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/metaculus-bot
+          key: research-cache-market-pulse-${{ github.run_id }}
+          restore-keys: |
+            research-cache-market-pulse-
+            research-cache-
+
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4
@@ -110,6 +119,11 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TAVILY_SEARCH_DEPTH: ${{ vars.TAVILY_SEARCH_DEPTH || 'basic' }}
+          TAVILY_TOPIC: ${{ vars.TAVILY_TOPIC || 'general' }}
+          TAVILY_TIME_RANGE: ${{ vars.TAVILY_TIME_RANGE }}
+          TAVILY_INCLUDE_RAW_CONTENT: ${{ vars.TAVILY_INCLUDE_RAW_CONTENT || 'false' }}
+          TAVILY_TIMEOUT_SECONDS: ${{ vars.TAVILY_TIMEOUT_SECONDS || '30' }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT || secrets.AZURE_OPENAI_ENDPOINT }}
@@ -147,7 +161,15 @@ jobs:
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
           MATRIX_NOTIFY_ALWAYS: "false"
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || secrets.SEC_USER_AGENT }}
-          BOT_ENABLE_LOCAL_QUESTION_CRAWL: "true"
+          BOT_ENABLE_RESEARCH_CACHE: ${{ vars.BOT_ENABLE_RESEARCH_CACHE || 'true' }}
+          BOT_RESEARCH_CACHE_PATH: ${{ vars.BOT_RESEARCH_CACHE_PATH || '.cache/metaculus-bot/research_cache.json' }}
+          BOT_RESEARCH_CACHE_TTL_HOURS: ${{ vars.BOT_RESEARCH_CACHE_TTL_HOURS || '24' }}
+          BOT_RESEARCH_CACHE_MAX_ENTRIES: ${{ vars.BOT_RESEARCH_CACHE_MAX_ENTRIES || '500' }}
+          BOT_ENABLE_LOCAL_QUESTION_CRAWL: ${{ vars.BOT_ENABLE_LOCAL_QUESTION_CRAWL || 'true' }}
+          BOT_LOCAL_CRAWL_INCLUDE_QUESTION_PAGE: ${{ vars.BOT_LOCAL_CRAWL_INCLUDE_QUESTION_PAGE || 'false' }}
+          BOT_LOCAL_CRAWL_MAX_URLS: ${{ vars.BOT_LOCAL_CRAWL_MAX_URLS }}
+          BOT_LOCAL_CRAWL_TOTAL_CHAR_BUDGET: ${{ vars.BOT_LOCAL_CRAWL_TOTAL_CHAR_BUDGET }}
+          BOT_LOCAL_CRAWL_PER_URL_CHAR_BUDGET: ${{ vars.BOT_LOCAL_CRAWL_PER_URL_CHAR_BUDGET }}
 
       - name: Retrospective (resolved questions)
         run: |
