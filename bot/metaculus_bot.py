@@ -25,6 +25,11 @@ from urllib.parse import urlparse
 
 from bot.env import env_bool as _env_bool, env_float as _env_float, env_int as _env_int
 from bot.local_crawl_support import LocalCrawlSupportMixin
+from bot.research_cache import (
+    ResearchCache,
+    build_research_cache_key,
+    research_cache_options_from_env,
+)
 from bot.search_telemetry import record_exa_fallback
 from bot.smart_searcher_circuit import SmartSearcherCircuitMixin
 from bot.tavily_searcher import TavilySmartSearcher
@@ -2743,6 +2748,14 @@ class MetaculusBot(
             if not researcher or researcher == "None" or researcher == "no_research":
                 return ""
 
+            researcher_cache_name = GeneralLlm.to_model_name(researcher)
+            research_cache = ResearchCache()
+            research_cache_key = build_research_cache_key(
+                question=question,
+                researcher_name=researcher_cache_name,
+                options=research_cache_options_from_env(),
+            )
+
             tool_trace: dict | None = None
             if self._tool_trace_enabled():
                 try:
@@ -2763,6 +2776,21 @@ class MetaculusBot(
                         pass
                 except Exception:
                     tool_trace = None
+
+            cached_research = research_cache.get(research_cache_key)
+            if cached_research is not None:
+                logger.info("Research cache hit for URL %s", question.page_url)
+                if tool_trace is not None:
+                    tool_trace_record_value(
+                        tool_trace, key="research_cache_hit", value=True
+                    )
+                return cached_research
+            if research_cache.enabled:
+                logger.info("Research cache miss for URL %s", question.page_url)
+                if tool_trace is not None:
+                    tool_trace_record_value(
+                        tool_trace, key="research_cache_hit", value=False
+                    )
 
             local_crawl_context = await self._get_local_crawl_context_cached(question)
             if tool_trace is not None:
@@ -2814,9 +2842,10 @@ class MetaculusBot(
                 logger.info(
                     f"Found Research for URL {question.page_url} (free strategy {strategy}):\n{combined}"
                 )
+                research_cache.set(research_cache_key, combined)
                 return combined
 
-            researcher_model_name = GeneralLlm.to_model_name(researcher)
+            researcher_model_name = researcher_cache_name
             researcher_model_name_lower = researcher_model_name.lower()
             logger.info(f"Researcher strategy/model: {researcher_model_name}")
 
@@ -3887,6 +3916,7 @@ class MetaculusBot(
                     max_urls=self._tool_trace_max_urls(),
                 )
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
+            research_cache.set(research_cache_key, research)
             return research
 
     def _create_unified_explanation(
