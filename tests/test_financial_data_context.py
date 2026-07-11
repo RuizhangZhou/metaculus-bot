@@ -57,6 +57,43 @@ class TestFinancialDataContext(unittest.TestCase):
         self.assertTrue(spec.needs_market_close)
         self.assertTrue(spec.should_skip_broad_news)
 
+    def test_build_spec_from_explicit_yahoo_resolution_url(self) -> None:
+        question = SimpleNamespace(
+            question_text="Will this index close above 7000?",
+            background_info="",
+            resolution_criteria=(
+                "Resolved using https://finance.yahoo.com/quote/%5EGSPC/ at market close."
+            ),
+            fine_print="",
+        )
+
+        spec = build_financial_question_spec(question)
+
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual(spec.instruments[0].symbol, "^GSPC")
+        self.assertEqual(spec.instruments[0].source, "explicit-yahoo-url")
+        self.assertEqual(spec.target_kind, "index_level")
+        self.assertTrue(spec.has_explicit_source_urls)
+
+    def test_build_spec_from_explicit_nasdaq_api_url(self) -> None:
+        question = SimpleNamespace(
+            question_text="Will this stock close above 250?",
+            background_info="",
+            resolution_criteria=(
+                "Use https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks."
+            ),
+            fine_print="",
+        )
+
+        spec = build_financial_question_spec(question)
+
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual(spec.instruments[0].symbol, "AAPL")
+        self.assertEqual(spec.instruments[0].source, "explicit-nasdaq-api-url")
+        self.assertEqual(spec.target_kind, "equity_price")
+
     @patch("bot.financial_data_context.requests.get")
     def test_prefetch_yahoo_snapshot_renders_quote_and_volatility(self, mock_get) -> None:
         base_ts = 1_767_225_600  # 2026-01-01T00:00:00Z

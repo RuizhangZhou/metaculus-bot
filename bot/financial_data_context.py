@@ -6,7 +6,7 @@ import math
 import re
 import statistics
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 
@@ -104,6 +104,20 @@ _FINANCIAL_TERMS = re.compile(
     re.IGNORECASE,
 )
 
+_YAHOO_SYMBOL_LABELS = {
+    "^GSPC": "S&P 500",
+    "^IXIC": "Nasdaq Composite",
+    "^NDX": "Nasdaq-100",
+    "^DJI": "Dow Jones Industrial Average",
+    "^RUT": "Russell 2000",
+    "^VIX": "CBOE Volatility Index",
+    "BTC-USD": "Bitcoin USD",
+    "ETH-USD": "Ethereum USD",
+    "CL=F": "WTI crude oil futures",
+    "BZ=F": "Brent crude oil futures",
+    "GC=F": "Gold futures",
+}
+
 _THRESHOLD_RE = re.compile(
     r"\b(?P<direction>above|over|exceed(?:s|ed|ing)?|greater than|at least|"
     r"below|under|less than|at most|no more than|reach(?:es|ed|ing)?|hit(?:s|ting)?)"
@@ -137,6 +151,70 @@ def _add_instrument(
     instruments.append(
         FinancialInstrumentSpec(symbol=symbol.strip(), label=label.strip(), source=source)
     )
+
+
+def _normalize_market_symbol(symbol: str) -> str:
+    symbol = unquote(symbol or "").strip().upper()
+    symbol = symbol.strip("/")
+    symbol = re.sub(r"[^A-Z0-9.^=-]", "", symbol)
+    return symbol[:20]
+
+
+def _label_for_symbol(symbol: str) -> str:
+    normalized = symbol.upper()
+    if normalized in _YAHOO_SYMBOL_LABELS:
+        return _YAHOO_SYMBOL_LABELS[normalized]
+    if normalized.startswith("^"):
+        return f"{normalized} index"
+    if normalized.endswith("-USD"):
+        return normalized.replace("-", " ")
+    if normalized.endswith("=F"):
+        return f"{normalized} futures"
+    return f"{normalized} equity"
+
+
+def _add_instruments_from_explicit_urls(
+    instruments: list[FinancialInstrumentSpec], *, text: str
+) -> None:
+    for raw_url in extract_http_urls(text):
+        parsed = urlparse(raw_url)
+        host = parsed.netloc.lower()
+        path_parts = [part for part in parsed.path.split("/") if part]
+        symbol = ""
+        source = ""
+
+        if "finance.yahoo.com" in host:
+            if len(path_parts) >= 2 and path_parts[0].lower() == "quote":
+                symbol = _normalize_market_symbol(path_parts[1])
+                source = "explicit-yahoo-url"
+        elif "query1.finance.yahoo.com" in host or "query2.finance.yahoo.com" in host:
+            lowered = [part.lower() for part in path_parts]
+            if len(path_parts) >= 4 and lowered[:3] == ["v8", "finance", "chart"]:
+                symbol = _normalize_market_symbol(path_parts[3])
+                source = "explicit-yahoo-chart-url"
+        elif "nasdaq.com" in host:
+            lowered = [part.lower() for part in path_parts]
+            if len(path_parts) >= 3 and lowered[:2] == ["api", "quote"]:
+                symbol = _normalize_market_symbol(path_parts[2])
+                source = "explicit-nasdaq-api-url"
+            elif "quote" in lowered:
+                idx = lowered.index("quote")
+                if idx + 1 < len(path_parts):
+                    symbol = _normalize_market_symbol(path_parts[idx + 1])
+                    source = "explicit-nasdaq-url"
+            elif "stocks" in lowered:
+                idx = lowered.index("stocks")
+                if idx + 1 < len(path_parts):
+                    symbol = _normalize_market_symbol(path_parts[idx + 1])
+                    source = "explicit-nasdaq-url"
+
+        if symbol:
+            _add_instrument(
+                instruments,
+                symbol=symbol,
+                label=_label_for_symbol(symbol),
+                source=source or "explicit-source-url",
+            )
 
 
 def _extract_threshold(text: str) -> tuple[float | None, str | None]:
@@ -197,6 +275,7 @@ def build_financial_question_spec(
         return None
 
     instruments: list[FinancialInstrumentSpec] = []
+    _add_instruments_from_explicit_urls(instruments, text=text)
     for pattern, symbol, label in _SYMBOL_PATTERNS:
         if pattern.search(text):
             _add_instrument(
