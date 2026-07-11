@@ -24,6 +24,11 @@ from typing import Sequence
 from urllib.parse import urlparse
 
 from bot.env import env_bool as _env_bool, env_float as _env_float, env_int as _env_int
+from bot.financial_data_context import (
+    FinancialDataLimits,
+    financial_context_recommends_skipping_broad_news,
+    prefetch_financial_data_context,
+)
 from bot.local_crawl_support import LocalCrawlSupportMixin
 from bot.research_cache import (
     ResearchCache,
@@ -1713,6 +1718,77 @@ class MetaculusBot(
         wrapped = [limited(coro) for coro in coroutines]
         return await super()._gather_results_and_exceptions(wrapped)
 
+    ################################ FINANCIAL DATA ##################################
+
+    @staticmethod
+    def _financial_data_prefetch_enabled() -> bool:
+        return _env_bool("BOT_ENABLE_FINANCIAL_DATA_PREFETCH", True)
+
+    @staticmethod
+    def _financial_data_skip_broad_news_enabled() -> bool:
+        return _env_bool("BOT_FINANCIAL_DATA_SKIP_BROAD_NEWS", False)
+
+    @staticmethod
+    def _financial_data_limits_from_env() -> FinancialDataLimits:
+        return FinancialDataLimits(
+            timeout_seconds=_env_int("BOT_FINANCIAL_DATA_TIMEOUT_SECONDS", 12),
+            max_symbols=_env_int("BOT_FINANCIAL_DATA_MAX_SYMBOLS", 2),
+            range=os.getenv("BOT_FINANCIAL_DATA_RANGE", "6mo").strip() or "6mo",
+            interval=os.getenv("BOT_FINANCIAL_DATA_INTERVAL", "1d").strip() or "1d",
+            max_chars=_env_int("BOT_FINANCIAL_DATA_MAX_CHARS", 5000),
+            min_history_points_for_volatility=_env_int(
+                "BOT_FINANCIAL_DATA_MIN_HISTORY_POINTS", 20
+            ),
+            truncation_marker=os.getenv(
+                "BOT_FINANCIAL_DATA_TRUNCATION_MARKER", "\n\n[TRUNCATED]"
+            ),
+        )
+
+    async def _get_financial_market_context(
+        self, question: MetaculusQuestion
+    ) -> str:
+        if not self._financial_data_prefetch_enabled():
+            return ""
+        inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
+        try:
+            return await asyncio.to_thread(
+                prefetch_financial_data_context,
+                question=question,
+                inferred_ticker=inferred_ticker,
+                limits=self._financial_data_limits_from_env(),
+            )
+        except Exception as e:
+            logger.info(
+                "Financial data prefetch failed for %s: %s",
+                getattr(question, "page_url", None),
+                e,
+            )
+            return ""
+
+    @staticmethod
+    def _combine_financial_context_with_research(
+        financial_context: str, research: str
+    ) -> str:
+        return "\n\n".join(
+            [part for part in [financial_context, research] if part and part.strip()]
+        ).strip()
+
+    @staticmethod
+    def _financial_forecast_guidance(research: str) -> str:
+        if "Financial market data snapshot" not in (research or ""):
+            return ""
+        return clean_indents(
+            """
+            Financial-market forecasting guidance:
+            - Treat the fresh financial market data snapshot as the anchor for current state.
+            - If the snapshot includes baseline_probability_for_prompt, treat it as the mechanical prior from current price, threshold distance, time remaining, and realized volatility.
+            - For price/index/crypto/commodity threshold questions, first compare the latest quote or close to the threshold, then scale the gap by trailing realized volatility and time remaining.
+            - Adjust the mechanical prior only for event risk, scheduled catalysts, methodology/source conflicts, or information not reflected in trailing volatility.
+            - Keep the rationale concise. Use broad news only if it changes the data anchor, explains a scheduled event, or is explicitly part of the resolution source.
+            - If the question's explicit resolution source or linked source conflicts with generic market data, prefer the explicit resolution source.
+            """
+        )
+
     ##################################### RESEARCH #####################################
 
     @staticmethod
@@ -2756,17 +2832,6 @@ class MetaculusBot(
         async with self._concurrency_limiter:
             researcher = self.get_llm("researcher")
 
-            if not researcher or researcher == "None" or researcher == "no_research":
-                return ""
-
-            researcher_cache_name = GeneralLlm.to_model_name(researcher)
-            research_cache = ResearchCache()
-            research_cache_key = build_research_cache_key(
-                question=question,
-                researcher_name=researcher_cache_name,
-                options=research_cache_options_from_env(),
-            )
-
             tool_trace: dict | None = None
             if self._tool_trace_enabled():
                 try:
@@ -2788,6 +2853,31 @@ class MetaculusBot(
                 except Exception:
                     tool_trace = None
 
+            financial_market_context = await self._get_financial_market_context(question)
+            if tool_trace is not None and financial_market_context:
+                tool_trace_record_urls(
+                    tool_trace,
+                    bucket="financial_data_urls",
+                    urls=extract_urls_from_text(financial_market_context),
+                    max_urls=self._tool_trace_max_urls(),
+                )
+                tool_trace_record_value(
+                    tool_trace,
+                    key="financial_data_chars",
+                    value=len(financial_market_context),
+                )
+
+            if not researcher or researcher == "None" or researcher == "no_research":
+                return financial_market_context
+
+            researcher_cache_name = GeneralLlm.to_model_name(researcher)
+            research_cache = ResearchCache()
+            research_cache_key = build_research_cache_key(
+                question=question,
+                researcher_name=researcher_cache_name,
+                options=research_cache_options_from_env(),
+            )
+
             cached_research = research_cache.get(research_cache_key)
             if cached_research is not None:
                 logger.info("Research cache hit for URL %s", question.page_url)
@@ -2795,7 +2885,9 @@ class MetaculusBot(
                     tool_trace_record_value(
                         tool_trace, key="research_cache_hit", value=True
                     )
-                return cached_research
+                return self._combine_financial_context_with_research(
+                    financial_market_context, cached_research
+                )
             if research_cache.enabled:
                 logger.info("Research cache miss for URL %s", question.page_url)
                 if tool_trace is not None:
@@ -2847,13 +2939,16 @@ class MetaculusBot(
                         urls=extract_urls_from_text(research),
                         max_urls=self._tool_trace_max_urls(),
                     )
-                combined = "\n\n".join(
+                research_body = "\n\n".join(
                     [part for part in [local_crawl_block, research] if part]
                 ).strip()
+                combined = self._combine_financial_context_with_research(
+                    financial_market_context, research_body
+                )
                 logger.info(
                     f"Found Research for URL {question.page_url} (free strategy {strategy}):\n{combined}"
                 )
-                research_cache.set(research_cache_key, combined)
+                research_cache.set(research_cache_key, research_body)
                 return combined
 
             researcher_model_name = researcher_cache_name
@@ -2879,6 +2974,34 @@ class MetaculusBot(
                 tool_trace_record_value(
                     tool_trace, key="tool_router_plan", value=tool_plan.model_dump(mode="json")
                 )
+
+            if (
+                financial_market_context
+                and self._financial_data_skip_broad_news_enabled()
+                and financial_context_recommends_skipping_broad_news(
+                    financial_market_context
+                )
+                and tool_plan.use_web_search
+            ):
+                notes = (tool_plan.notes or "").strip()
+                notes = (
+                    f"{notes}; financial_data_skip_broad_news"
+                    if notes
+                    else "financial_data_skip_broad_news"
+                )
+                tool_plan = tool_plan.model_copy(
+                    update={"use_web_search": False, "notes": notes}
+                )
+                logger.info(
+                    "Financial data context disabled broad web search for %s",
+                    question.page_url,
+                )
+                if tool_trace is not None:
+                    tool_trace_record_value(
+                        tool_trace,
+                        key="tool_router_plan_after_financial_data",
+                        value=tool_plan.model_dump(mode="json"),
+                    )
 
             inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
             if tool_trace is not None and inferred_ticker:
@@ -3164,6 +3287,30 @@ class MetaculusBot(
                 else ""
             )
 
+            financial_market_instructions = (
+                clean_indents(
+                    """
+                    Financial market data guidance:
+                    - You may be given a fresh deterministic market-data snapshot fetched outside the research cache.
+                    - For market close, threshold, price, index-level, crypto, and commodity questions, use this snapshot as the current-state anchor.
+                    - Prefer explicit question/resolution sources over generic market-data sources if they conflict.
+                    - Avoid broad news summaries when the snapshot and question-linked sources already establish the current data state.
+                    """
+                )
+                if financial_market_context
+                else ""
+            )
+            financial_market_block = (
+                clean_indents(
+                    f"""
+                    Fresh financial market data:
+                    {financial_market_context}
+                    """
+                )
+                if financial_market_context
+                else ""
+            )
+
             catalog_text, catalog_urls = self._get_source_catalog_suggestions(question=question)
             if tool_trace is not None and catalog_urls:
                 tool_trace_record_urls(
@@ -3231,6 +3378,10 @@ class MetaculusBot(
                 {official_instructions}
 
                 {official_block}
+
+                {financial_market_instructions}
+
+                {financial_market_block}
 
                 {source_catalog_instructions}
 
@@ -3929,9 +4080,14 @@ class MetaculusBot(
                     urls=extract_urls_from_text(research),
                     max_urls=self._tool_trace_max_urls(),
                 )
-            logger.info(f"Found Research for URL {question.page_url}:\n{research}")
+            combined_research = self._combine_financial_context_with_research(
+                financial_market_context, research
+            )
+            logger.info(
+                f"Found Research for URL {question.page_url}:\n{combined_research}"
+            )
             research_cache.set(research_cache_key, research)
-            return research
+            return combined_research
 
     def _create_unified_explanation(
         self,
@@ -4044,6 +4200,7 @@ class MetaculusBot(
 
             {self._resolution_criteria_forecast_guardrails()}
 
+            {self._financial_forecast_guidance(research)}
 
             Your research assistant says:
             {research}
@@ -4163,6 +4320,7 @@ class MetaculusBot(
 
             {self._resolution_criteria_forecast_guardrails()}
 
+            {self._financial_forecast_guidance(research)}
 
             Your research assistant says:
             {research}
@@ -4247,6 +4405,8 @@ class MetaculusBot(
             {self._resolution_criteria_forecast_guardrails()}
 
             Units for answer: {question.unit_of_measure if question.unit_of_measure else "Not stated (please infer this)"}
+
+            {self._financial_forecast_guidance(research)}
 
             Your research assistant says:
             {research}
@@ -4353,6 +4513,8 @@ class MetaculusBot(
             {question.fine_print}
 
             {self._resolution_criteria_forecast_guardrails()}
+
+            {self._financial_forecast_guidance(research)}
 
             Your research assistant says:
             {research}
