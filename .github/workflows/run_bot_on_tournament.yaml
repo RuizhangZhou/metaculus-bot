@@ -68,12 +68,12 @@ jobs:
       # Adding the below will make the workflow faster, but will mean you don't automatically get updates from forecasting-tools and other packages
       # - name: Load cached venv
       #   id: cached-poetry-dependencies
-      #   uses: actions/cache@v4
+      #   uses: actions/cache@v5
       #   with:
       #     path: .venv
       #     key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
       - name: Restore research cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/metaculus-bot
           key: research-cache-tournaments-${{ github.run_id }}
@@ -82,7 +82,7 @@ jobs:
             research-cache-
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
