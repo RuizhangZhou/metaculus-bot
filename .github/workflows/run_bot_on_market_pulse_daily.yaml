@@ -65,7 +65,7 @@ jobs:
           installer-parallel: true
 
       - name: Restore research cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/metaculus-bot
           key: research-cache-market-pulse-${{ github.run_id }}
@@ -75,7 +75,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
