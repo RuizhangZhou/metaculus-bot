@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-04-19T00:31:21.448067+00:00'
+updated_at: '2026-07-11T00:00:00+00:00'
 sources:
 - url: https://api.nasdaq.com/api/analyst/TSLA/earnings-forecast
   title: Nasdaq analyst EPS forecast (example)
@@ -8,6 +8,16 @@ sources:
   - eps
   - api
   notes: Example endpoint (replace ticker). Some endpoints work best with a browser-like NASDAQ_USER_AGENT.
+- url: https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks
+  title: Nasdaq quote API (example)
+  tags:
+  - nasdaq
+  - stock
+  - quote
+  - api
+  notes: Example endpoint; replace AAPL and assetclass as needed. Useful for last sale/quote data when Nasdaq serves the ticker.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
 - url: https://apps.bea.gov/api/
   title: BEA API documentation
   tags:
@@ -114,6 +124,46 @@ sources:
   notes: Yahoo Finance page for Leidos Holdings.
   added_at: '2026-04-12T00:33:12.503366+00:00'
   last_seen_at: '2026-04-12T00:33:12.503366+00:00'
+- url: https://finance.yahoo.com/quote/%5EGSPC/
+  title: Yahoo Finance S&P 500 quote
+  tags:
+  - finance
+  - stock-index
+  - sp500
+  - market-close
+  notes: Useful for S&P 500 close/level questions; use the quote and historical data tabs when resolution references market close.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
+- url: https://finance.yahoo.com/quote/%5EIXIC/
+  title: Yahoo Finance Nasdaq Composite quote
+  tags:
+  - finance
+  - stock-index
+  - nasdaq
+  - market-close
+  notes: Useful for Nasdaq Composite level/close questions.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
+- url: https://finance.yahoo.com/quote/%5EDJI/
+  title: Yahoo Finance Dow Jones Industrial Average quote
+  tags:
+  - finance
+  - stock-index
+  - dow
+  - market-close
+  notes: Useful for Dow level/close questions.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
+- url: https://finance.yahoo.com/quote/BTC-USD/
+  title: Yahoo Finance Bitcoin USD quote
+  tags:
+  - finance
+  - crypto
+  - bitcoin
+  - market-price
+  notes: Useful for BTC/USD price questions when the resolver accepts major market-data sites.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
 - url: https://fred.stlouisfed.org/docs/api/fred/
   title: FRED API documentation
   tags:
@@ -121,6 +171,36 @@ sources:
   - macro
   - api
   notes: Requires FRED_API_KEY for API calls. Use tools to query series/observations.
+- url: https://fred.stlouisfed.org/series/DGS10
+  title: 10-Year Treasury Constant Maturity Rate
+  tags:
+  - finance
+  - rates
+  - treasury
+  - fred
+  notes: Official FRED series for the 10-year Treasury yield; useful for rate and bond-market questions.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
+- url: https://fred.stlouisfed.org/series/DCOILWTICO
+  title: WTI crude oil spot price
+  tags:
+  - finance
+  - oil
+  - energy
+  - fred
+  notes: Official FRED series for WTI spot prices; useful for oil price questions.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
+- url: https://fred.stlouisfed.org/series/VIXCLS
+  title: CBOE Volatility Index VIX close
+  tags:
+  - finance
+  - volatility
+  - vix
+  - fred
+  notes: FRED mirror of VIX close; useful for volatility threshold questions.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
 - url: https://fred.stlouisfed.org/series/AAA10Y
   title: Moody's Seasoned Aaa Corporate Bond Yield Relative to Yield on 10-Year Treasury Constant Maturity
   tags:
@@ -209,6 +289,16 @@ sources:
   - labor
   - api
   notes: BLS_API_KEY is optional but helps with quotas. Use tools to fetch time series (CPI, unemployment, payrolls).
+- url: https://www.cboe.com/tradable_products/vix/
+  title: Cboe VIX product page
+  tags:
+  - finance
+  - volatility
+  - vix
+  - exchange
+  notes: Primary exchange page for VIX references; use with FRED VIXCLS or market-data pages for current/close values.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
 - url: https://www.eia.gov/opendata/
   title: EIA Open Data documentation
   tags:
@@ -398,6 +488,16 @@ sources:
   notes: Official TSA page for passenger volume statistics.
   added_at: '2026-02-22T01:31:22.988390+00:00'
   last_seen_at: '2026-02-22T01:31:22.988390+00:00'
+- url: https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView
+  title: U.S. Treasury daily interest rates
+  tags:
+  - finance
+  - rates
+  - treasury
+  - official
+  notes: Official Treasury daily yield curve table; useful when resolution references U.S. Treasury rates.
+  added_at: '2026-07-11T00:00:00+00:00'
+  last_seen_at: '2026-07-11T00:00:00+00:00'
 - url: https://www.who.int/teams/polio
   title: WHO Polio Team
   tags:

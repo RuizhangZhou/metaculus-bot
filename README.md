@@ -44,6 +44,7 @@ Instructions for getting your METACULUS_TOKEN, OPENROUTER_API_KEY, or optional s
 The workflows live in `.github/workflows/`.
 
 - `run_bot_on_tournament.yaml` scans Summer 2026 FutureEval plus minibench in one bot process, deduplicates open questions, then submits forecasts. It sets `BOT_MAX_CONCURRENT_QUESTIONS=2` and `BOT_MAX_CONCURRENT_TASKS=1` by default. It also has a soft `BOT_TOURNAMENT_TIMEOUT_MINUTES` budget, defaulting to 90 minutes; the half-hour schedule may queue, but the active run will not be cancelled by concurrency.
+- `run_bot_on_market_pulse_daily.yaml` refreshes Market Pulse daily using `tournament_update`. It defaults to `MARKET_PULSE_TOURNAMENT` or `market-pulse-26q3`, submits forecasts, and defaults to refreshing all open questions each day because the tournament is small. If `BOT_SYNC_COMMUNITY_PREDICTION_WHEN_AVAILABLE=true`, it submits the visible Metaculus community prediction directly and skips the research pipeline for those questions.
 - `daily_digest.yaml` runs `python main.py --mode digest` daily (no submission) and can notify via Matrix if significant changes are detected.
 - To change the submission tournament without a code change, set the GitHub Actions repository variable `BOT_TOURNAMENT`. `tracked_tournaments.txt` is used by digest mode.
 - Both workflows expose `workflow_dispatch` inputs so you can override `researcher`/models from the Actions UI without committing code changes.
@@ -64,7 +65,7 @@ If you want the bot to *analyze questions for you* without auto-submitting forec
 If you want a simple postmortem on how the bot performed on already-resolved questions, use `--mode retrospective`.
 
 - Run locally (defaults to `MARKET_PULSE_TOURNAMENT`): `poetry run python main.py --mode retrospective`
-- Or specify tournaments: `poetry run python main.py --mode retrospective --tournament market-pulse-26q1`
+- Or specify tournaments: `poetry run python main.py --mode retrospective --tournament market-pulse-26q3`
 - Output: `reports/retrospective/<tournament>_YYYY-MM-DD.md`
 
 ## Weekly retrospective (last 7 days)

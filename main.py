@@ -19,6 +19,7 @@ from digest_mode import (
 from tournament_update import select_questions_for_tournament_update
 from forecasting_tools import GeneralLlm, MetaculusClient
 
+from community_prediction_sync import sync_questions_to_community_predictions
 from metaculus_bot import MetaculusBot
 from retrospective_mode import run_retrospective
 from weekly_retrospective_mode import run_weekly_retrospective
@@ -650,6 +651,27 @@ if __name__ == "__main__":
                     counts.get("skipped_missing_cp"),
                     counts.get("skipped_missing_my_forecast"),
                 )
+                if not questions_to_forecast:
+                    continue
+                if _env_bool("BOT_SYNC_COMMUNITY_PREDICTION_WHEN_AVAILABLE", False):
+                    (
+                        questions_to_forecast,
+                        community_sync_counts,
+                    ) = sync_questions_to_community_predictions(
+                        client=client,
+                        questions=questions_to_forecast,
+                        publish=publish_to_metaculus,
+                    )
+                    logging.getLogger(__name__).info(
+                        "Community prediction sync (%s): checked=%s, synced=%s, dry_run_synced=%s, missing_community_prediction=%s, failed=%s, remaining_for_pipeline=%s",
+                        tournament_id,
+                        community_sync_counts.get("checked"),
+                        community_sync_counts.get("synced"),
+                        community_sync_counts.get("dry_run_synced"),
+                        community_sync_counts.get("missing_community_prediction"),
+                        community_sync_counts.get("failed"),
+                        len(questions_to_forecast),
+                    )
                 if not questions_to_forecast:
                     continue
                 forecast_reports.extend(
