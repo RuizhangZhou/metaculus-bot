@@ -73,6 +73,14 @@ jobs:
             research-cache-market-pulse-
             research-cache-
 
+      - name: Restore bot state
+        uses: actions/cache@v5
+        with:
+          path: .state
+          key: bot-state-market-pulse-${{ github.run_id }}
+          restore-keys: |
+            bot-state-market-pulse-
+
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v5
@@ -201,6 +209,14 @@ jobs:
           BOT_FINANCIAL_DATA_INTERVAL: ${{ vars.BOT_FINANCIAL_DATA_INTERVAL || '1d' }}
           BOT_FINANCIAL_DATA_MAX_SYMBOLS: ${{ vars.BOT_FINANCIAL_DATA_MAX_SYMBOLS || '2' }}
           BOT_FINANCIAL_DATA_MAX_CHARS: ${{ vars.BOT_FINANCIAL_DATA_MAX_CHARS || '5000' }}
+          BOT_ENABLE_FINANCIAL_STRUCTURED_LOGGING: ${{ vars.BOT_ENABLE_FINANCIAL_STRUCTURED_LOGGING || 'true' }}
+          BOT_ENABLE_FINANCIAL_UPDATE_GATING: ${{ vars.BOT_ENABLE_FINANCIAL_UPDATE_GATING || 'true' }}
+          BOT_FINANCIAL_UPDATE_STATE_PATH: ${{ vars.BOT_FINANCIAL_UPDATE_STATE_PATH || '.state/financial_update_state.json' }}
+          BOT_FINANCIAL_STRUCTURED_LOG_PATH: ${{ vars.BOT_FINANCIAL_STRUCTURED_LOG_PATH || '.state/financial_predictions.jsonl' }}
+          BOT_FINANCIAL_UPDATE_GATE_BASELINE_DELTA: ${{ vars.BOT_FINANCIAL_UPDATE_GATE_BASELINE_DELTA || '0.03' }}
+          BOT_FINANCIAL_UPDATE_GATE_PRICE_SIGMA: ${{ vars.BOT_FINANCIAL_UPDATE_GATE_PRICE_SIGMA || '0.50' }}
+          BOT_FINANCIAL_UPDATE_GATE_ALWAYS_AFTER_HOURS: ${{ vars.BOT_FINANCIAL_UPDATE_GATE_ALWAYS_AFTER_HOURS || '72' }}
+          BOT_FINANCIAL_UPDATE_GATE_ALWAYS_WITHIN_DAYS: ${{ vars.BOT_FINANCIAL_UPDATE_GATE_ALWAYS_WITHIN_DAYS || '2' }}
           BOT_ENABLE_RESEARCH_CACHE: ${{ vars.BOT_ENABLE_RESEARCH_CACHE || 'true' }}
           BOT_RESEARCH_CACHE_PATH: ${{ vars.BOT_RESEARCH_CACHE_PATH || '.cache/metaculus-bot/research_cache.json' }}
           BOT_RESEARCH_CACHE_TTL_HOURS: ${{ vars.BOT_RESEARCH_CACHE_TTL_HOURS || '24' }}
