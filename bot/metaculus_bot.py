@@ -39,6 +39,10 @@ from bot.search_telemetry import record_exa_fallback
 from bot.smart_searcher_circuit import SmartSearcherCircuitMixin
 from bot.tavily_searcher import TavilySmartSearcher
 from bot.tool_router import ToolRouterMixin, ToolRouterPlan
+from financial_update_logging import (
+    get_cached_financial_context,
+    set_cached_financial_context,
+)
 from local_web_crawl import PlaywrightWebPageParser
 
 import requests
@@ -1749,14 +1753,20 @@ class MetaculusBot(
     ) -> str:
         if not self._financial_data_prefetch_enabled():
             return ""
+        cached_context = get_cached_financial_context(question)
+        if cached_context:
+            return cached_context
         inferred_ticker = (self._infer_ticker_symbol(question) or "").strip().upper()
         try:
-            return await asyncio.to_thread(
+            context = await asyncio.to_thread(
                 prefetch_financial_data_context,
                 question=question,
                 inferred_ticker=inferred_ticker,
                 limits=self._financial_data_limits_from_env(),
             )
+            if context:
+                set_cached_financial_context(question, context)
+            return context
         except Exception as e:
             logger.info(
                 "Financial data prefetch failed for %s: %s",

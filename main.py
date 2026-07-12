@@ -19,7 +19,13 @@ from digest_mode import (
 from tournament_update import select_questions_for_tournament_update
 from forecasting_tools import GeneralLlm, MetaculusClient
 
+from bot.financial_data_context import prefetch_financial_data_context
 from community_prediction_sync import sync_questions_to_community_predictions
+from financial_update_logging import (
+    filter_questions_for_financial_update_gating,
+    financial_update_gating_options_from_env,
+    record_financial_forecast_results,
+)
 from metaculus_bot import MetaculusBot
 from retrospective_mode import run_retrospective
 from weekly_retrospective_mode import run_weekly_retrospective
@@ -674,13 +680,58 @@ if __name__ == "__main__":
                     )
                 if not questions_to_forecast:
                     continue
-                forecast_reports.extend(
-                    asyncio.run(
-                        bot.forecast_questions(
-                            questions_to_forecast, return_exceptions=True
+
+                gating_options = financial_update_gating_options_from_env()
+                if gating_options.enabled:
+                    def build_financial_context(question: object) -> str:
+                        inferred_ticker = (
+                            bot._infer_ticker_symbol(question) or ""
+                        ).strip().upper()
+                        return prefetch_financial_data_context(
+                            question=question,
+                            inferred_ticker=inferred_ticker,
+                            limits=bot._financial_data_limits_from_env(),
+                        )
+
+                    questions_to_forecast, financial_gating_counts = (
+                        filter_questions_for_financial_update_gating(
+                            questions=questions_to_forecast,
+                            options=gating_options,
+                            build_context=build_financial_context,
+                            tournament_id=tournament_id,
                         )
                     )
+                    logging.getLogger(__name__).info(
+                        "Financial update gating (%s): checked=%s, financial=%s, queued=%s, skipped=%s, non_financial=%s, fetch_failed=%s",
+                        tournament_id,
+                        financial_gating_counts.get("checked"),
+                        financial_gating_counts.get("financial"),
+                        financial_gating_counts.get("queued"),
+                        financial_gating_counts.get("skipped"),
+                        financial_gating_counts.get("non_financial"),
+                        financial_gating_counts.get("fetch_failed"),
+                    )
+                if not questions_to_forecast:
+                    continue
+                batch_reports = asyncio.run(
+                    bot.forecast_questions(
+                        questions_to_forecast, return_exceptions=True
+                    )
                 )
+                forecast_reports.extend(batch_reports)
+                if _env_bool("BOT_ENABLE_FINANCIAL_STRUCTURED_LOGGING", True):
+                    financial_log_counts = record_financial_forecast_results(
+                        reports=batch_reports,
+                        options=financial_update_gating_options_from_env(),
+                        tournament_id=tournament_id,
+                    )
+                    logging.getLogger(__name__).info(
+                        "Financial structured logging (%s): checked=%s, financial=%s, non_financial=%s",
+                        tournament_id,
+                        financial_log_counts.get("checked"),
+                        financial_log_counts.get("financial"),
+                        financial_log_counts.get("non_financial"),
+                    )
 
         elif run_mode == "metaculus_cup":
             bot.skip_previously_forecasted_questions = False
