@@ -32,10 +32,16 @@ from weekly_retrospective_mode import run_weekly_retrospective
 
 
 def _notify_matrix_on_submit(
-    *, run_mode: str, forecast_reports: list[object]
+    *,
+    run_mode: str,
+    forecast_reports: list[object],
+    extra_lines: list[str] | None = None,
 ) -> None:
     if run_mode not in {"tournament", "tournament_update", "metaculus_cup"}:
         return
+    summary_lines = [
+        line.rstrip() for line in (extra_lines or []) if line.strip()
+    ]
     successful_reports = [
         report
         for report in forecast_reports
@@ -49,13 +55,22 @@ def _notify_matrix_on_submit(
         os.getenv("MATRIX_NOTIFY_ALWAYS", "").strip().lower()
         in {"1", "true", "yes", "y"}
     )
-    if not notify_always and not successful_reports and not failed_reports:
+    if (
+        not notify_always
+        and not successful_reports
+        and not failed_reports
+        and not summary_lines
+    ):
         return
 
     now_iso = datetime.now(timezone.utc).isoformat()
     lines = [
         f"Metaculus bot run ({now_iso[:10]}): {len(successful_reports)} submitted, {len(failed_reports)} failed"
     ]
+    if summary_lines:
+        lines.append("")
+        lines.append("Run summary:")
+        lines.extend(summary_lines)
     for report in successful_reports[:10]:
         question = getattr(report, "question", None)
         if question is None:
@@ -570,6 +585,7 @@ if __name__ == "__main__":
 
     client = MetaculusClient()
     forecast_reports: list[object] = []
+    matrix_extra_lines: list[str] = []
 
     try:
         if run_mode == "tournament":
@@ -648,14 +664,20 @@ if __name__ == "__main__":
                     tournament_id=tournament_id,
                 )
                 logging.getLogger(__name__).info(
-                    "Tournament update scan (%s): total_open=%s, queued_unforecasted=%s, queued_cp_changed=%s, queued_diverged_from_cp=%s, skipped_missing_cp=%s, skipped_missing_my_forecast=%s",
+                    "Tournament update scan (%s): total_open=%s, queued_unforecasted=%s, queued_cp_changed=%s, queued_diverged_from_cp=%s, queued_forced_all=%s, skipped_missing_cp=%s, skipped_missing_my_forecast=%s",
                     tournament_id,
                     counts.get("total_open"),
                     counts.get("queued_unforecasted"),
                     counts.get("queued_cp_changed"),
                     counts.get("queued_diverged_from_cp"),
+                    counts.get("queued_forced_all"),
                     counts.get("skipped_missing_cp"),
                     counts.get("skipped_missing_my_forecast"),
+                )
+                matrix_extra_lines.append(
+                    f"- {tournament_id}: open={counts.get('total_open')}, queued={len(questions_to_forecast)} "
+                    f"(unforecasted={counts.get('queued_unforecasted')}, cp_changed={counts.get('queued_cp_changed')}, "
+                    f"cp_diverged={counts.get('queued_diverged_from_cp')}, forced_all={counts.get('queued_forced_all')})"
                 )
                 if not questions_to_forecast:
                     continue
@@ -677,6 +699,11 @@ if __name__ == "__main__":
                         community_sync_counts.get("missing_community_prediction"),
                         community_sync_counts.get("failed"),
                         len(questions_to_forecast),
+                    )
+                    matrix_extra_lines.append(
+                        f"- {tournament_id} community sync: checked={community_sync_counts.get('checked')}, "
+                        f"synced={community_sync_counts.get('synced')}, failed={community_sync_counts.get('failed')}, "
+                        f"pipeline_remaining={len(questions_to_forecast)}"
                     )
                 if not questions_to_forecast:
                     continue
@@ -711,6 +738,11 @@ if __name__ == "__main__":
                         financial_gating_counts.get("non_financial"),
                         financial_gating_counts.get("fetch_failed"),
                     )
+                    matrix_extra_lines.append(
+                        f"- {tournament_id} financial gating: checked={financial_gating_counts.get('checked')}, "
+                        f"financial={financial_gating_counts.get('financial')}, queued={financial_gating_counts.get('queued')}, "
+                        f"skipped={financial_gating_counts.get('skipped')}, fetch_failed={financial_gating_counts.get('fetch_failed')}"
+                    )
                 if not questions_to_forecast:
                     continue
                 batch_reports = asyncio.run(
@@ -731,6 +763,10 @@ if __name__ == "__main__":
                         financial_log_counts.get("checked"),
                         financial_log_counts.get("financial"),
                         financial_log_counts.get("non_financial"),
+                    )
+                    matrix_extra_lines.append(
+                        f"- {tournament_id} structured log: financial={financial_log_counts.get('financial')}, "
+                        f"non_financial={financial_log_counts.get('non_financial')}"
                     )
 
         elif run_mode == "metaculus_cup":
@@ -819,5 +855,7 @@ if __name__ == "__main__":
     finally:
         if publish_to_metaculus:
             _notify_matrix_on_submit(
-                run_mode=run_mode, forecast_reports=forecast_reports
+                run_mode=run_mode,
+                forecast_reports=forecast_reports,
+                extra_lines=matrix_extra_lines,
             )

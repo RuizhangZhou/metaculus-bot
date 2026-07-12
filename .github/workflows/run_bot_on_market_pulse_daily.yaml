@@ -185,7 +185,7 @@ jobs:
           MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
           MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
-          MATRIX_NOTIFY_ALWAYS: "false"
+          MATRIX_NOTIFY_ALWAYS: "true"
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || secrets.SEC_USER_AGENT }}
           SEC_CONTACT_EMAIL: ${{ vars.SEC_CONTACT_EMAIL || secrets.SEC_CONTACT_EMAIL }}
           NASDAQ_USER_AGENT: ${{ vars.NASDAQ_USER_AGENT || secrets.NASDAQ_USER_AGENT }}
@@ -229,9 +229,25 @@ jobs:
 
       - name: Retrospective (resolved questions)
         run: |
+          set -o pipefail
           TOURNAMENT="${{ github.event.inputs.tournament }}"
           if [ -z "$TOURNAMENT" ]; then TOURNAMENT="${MARKET_PULSE_TOURNAMENT:-market-pulse-26q3}"; fi
-          poetry run python main.py --mode retrospective --tournament "$TOURNAMENT" | tee -a "$GITHUB_STEP_SUMMARY"
+          poetry run python main.py --mode retrospective --tournament "$TOURNAMENT" | tee retrospective_summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${MATRIX_NOTIFY_RETROSPECTIVE:-true}" = "true" ]; then
+            poetry run python - <<'PY'
+          from pathlib import Path
+
+          from digest_mode import matrix_send_message
+
+          text = Path("retrospective_summary.md").read_text(encoding="utf-8").strip()
+          if text:
+              matrix_send_message("Metaculus retrospective/backtest summary\n\n" + text[:3500])
+          PY
+          fi
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           MARKET_PULSE_TOURNAMENT: ${{ vars.MARKET_PULSE_TOURNAMENT }}
+          MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+          MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+          MATRIX_NOTIFY_RETROSPECTIVE: ${{ vars.MATRIX_NOTIFY_RETROSPECTIVE || 'true' }}
