@@ -1,0 +1,64 @@
+name: Market Pulse CP follower (guarded)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tournament:
+        description: "Exact Market Pulse slug"
+        required: false
+        default: "market-pulse-26q4"
+        type: string
+      submit:
+        description: "Actually submit (false = dry-run)"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    # Q3 CP reveals were at 10:00, 12:00, or 16:00 UTC. One run just after
+    # 17:00 catches every observed positive-length window with ample margin.
+    - cron: "20 17 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  follow_community_prediction:
+    # Scheduled runs consume no runner time until the account/token decision is
+    # explicit. Manual dry-runs remain available for verification.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      vars.MARKET_PULSE_CP_FOLLOW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: "metaculus bot"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Copy visible Community Predictions once
+        env:
+          METACULUS_TOKEN: ${{ secrets.MARKET_PULSE_METACULUS_TOKEN }}
+          MARKET_PULSE_CP_TOURNAMENT: ${{ vars.MARKET_PULSE_CP_TOURNAMENT || 'market-pulse-26q4' }}
+          MARKET_PULSE_EXPECTED_USERNAME: ${{ vars.MARKET_PULSE_EXPECTED_USERNAME }}
+          MARKET_PULSE_CP_GRACE_MINUTES: ${{ vars.MARKET_PULSE_CP_GRACE_MINUTES || '5' }}
+          MARKET_PULSE_CP_SAFETY_MINUTES: ${{ vars.MARKET_PULSE_CP_SAFETY_MINUTES || '15' }}
+          MARKET_PULSE_CP_LEAD_HOURS: ${{ vars.MARKET_PULSE_CP_LEAD_HOURS || '30' }}
+        run: |
+          TOURNAMENT="${{ github.event.inputs.tournament }}"
+          if [ -z "$TOURNAMENT" ]; then
+            TOURNAMENT="$MARKET_PULSE_CP_TOURNAMENT"
+          fi
+
+          ARGS=(market_pulse_cp_follower.py --tournament "$TOURNAMENT")
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.submit }}" = "true" ]; then
+            ARGS+=(--submit)
+          fi
+          python "${ARGS[@]}"

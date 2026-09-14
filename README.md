@@ -9,6 +9,7 @@ In this project are a few key files:
 - **main.py**: The entrypoint/CLI used by GitHub Actions.
 - **metaculus_bot.py**: Public entrypoints for the bot (implementation lives under `bot/`).
 - **digest_mode.py**: Digest + Matrix notification helpers (no auto-submission).
+- **market_pulse_cp_follower.py**: Guarded, no-LLM Market Pulse CP copier.
 - **main_with_no_framework.py**: A copy of the bot implemented with minimal dependencies. Useful if you want a more custom approach.
 
 Join the conversation about bot creation, get support, and follow updates on the [Metaculus Discord](https://discord.com/invite/NJgCC2nDfh) 'build a forecasting bot' channel.
@@ -43,8 +44,9 @@ Instructions for getting your METACULUS_TOKEN, OPENROUTER_API_KEY, or optional s
 ## Changing the Github automation
 The workflows live in `.github/workflows/`.
 
-- `run_bot_on_tournament.yaml` scans Summer 2026 FutureEval plus minibench in one bot process, deduplicates open questions, then submits forecasts. It sets `BOT_MAX_CONCURRENT_QUESTIONS=2` and `BOT_MAX_CONCURRENT_TASKS=1` by default. It also has a soft `BOT_TOURNAMENT_TIMEOUT_MINUTES` budget, defaulting to 90 minutes; the half-hour schedule may queue, but the active run will not be cancelled by concurrency.
+- `run_bot_on_tournament.yaml` auto-discovers the forecastable seasonal FutureEval tournament plus minibench in one bot process, deduplicates open questions, then submits forecasts. It sets `BOT_MAX_CONCURRENT_QUESTIONS=2` and `BOT_MAX_CONCURRENT_TASKS=1` by default. It also has a soft `BOT_TOURNAMENT_TIMEOUT_MINUTES` budget, defaulting to 90 minutes; the half-hour schedule may queue, but the active run will not be cancelled by concurrency.
 - `run_bot_on_market_pulse_daily.yaml` refreshes Market Pulse daily using `tournament_update`. It defaults to `MARKET_PULSE_TOURNAMENT` or `market-pulse-26q3`, submits forecasts, and defaults to refreshing all open questions each day because the tournament is small. If `BOT_SYNC_COMMUNITY_PREDICTION_WHEN_AVAILABLE=true`, it submits the visible Metaculus community prediction directly and skips the research pipeline for those questions.
+- `run_market_pulse_cp_follower.yaml` is a lightweight, guarded CP-only job. It never forecasts or uses an LLM when CP data is unavailable. See the [Market Pulse 26Q4 guide](docs/market-pulse-26q4-guide.md) before enabling it.
 - `daily_digest.yaml` runs `python main.py --mode digest` daily (no submission) and can notify via Matrix if significant changes are detected.
 - To change the submission tournament without a code change, set the GitHub Actions repository variable `BOT_TOURNAMENT`. `tracked_tournaments.txt` is used by digest mode.
 - Both workflows expose `workflow_dispatch` inputs so you can override `researcher`/models from the Actions UI without committing code changes.
