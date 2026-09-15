@@ -40,12 +40,13 @@ date and not blindly `scheduled_close_time`.
 Yes. Market Pulse uses spot scoring: only the forecast standing at the spot
 scoring timestamp is evaluated. A single submission per question is enough if
 it is made after the CP is visible, remains active, and lands before the spot
-timestamp. The CP can move after it is first revealed, so this implementation
-waits until the final 30 hours rather than copying immediately.
+timestamp. However, the CP can move after it is first revealed. The guarded
+automation therefore refreshes it on every daily run after reveal, while a
+manual participant may still submit only once near the scoring time.
 
 The API schedule itself is the queue. Persistent queue state is unnecessary:
-`my_forecasts.history` tells an ephemeral runner whether the account already
-submitted after that question's CP reveal. This also makes retries idempotent.
+each run reads `cp_reveal_time`, `spot_scoring_time`, and the current aggregate
+again. Repeated submissions are intentional.
 
 ## Low-cost GitHub Actions design
 
@@ -54,11 +55,10 @@ every Q3 reveal hour (10:00, 12:00, or 16:00 UTC). For each exact Q4
 subquestion it:
 
 1. waits until at least five minutes after `cp_reveal_time`;
-2. waits until `spot_scoring_time` is no more than 30 hours away;
-3. requires at least 15 minutes of safety before the spot timestamp;
-4. skips if the account already forecast after CP reveal;
-5. copies the aggregate exactly (including the raw 201-point continuous CDF);
-6. fails if CP data is absent, with no LLM/research/fallback prediction.
+2. requires the question still to be before `spot_scoring_time`;
+3. copies the current aggregate again on every daily run (including the raw
+   201-point continuous CDF);
+4. fails if CP data is absent, with no LLM/research/fallback prediction.
 
 It uses only checkout, Python, and the stdlib—no Poetry, browser, LLM, search,
 or cache setup. Scheduled jobs are gated by
@@ -108,4 +108,3 @@ scoring time rather than relying on the outer tournament close date.
 - [Market Pulse Challenge 26Q3](https://www.metaculus.com/tournament/market-pulse-26q3/)
 - [Metaculus scoring FAQ](https://www.metaculus.com/help/scores-faq/)
 - [Metaculus API specification](https://github.com/Metaculus/metaculus/blob/main/docs/openapi.yml)
-

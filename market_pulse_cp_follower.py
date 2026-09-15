@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Submit the visible Market Pulse Community Prediction exactly once.
+"""Refresh a Market Pulse forecast from the visible Community Prediction daily.
 
-This deliberately contains no forecasting or research fallback.  A question is
-eligible only after ``cp_reveal_time`` and before ``spot_scoring_time``.  The
-Metaculus API's own ``my_forecasts`` history is the idempotency record, so an
-ephemeral GitHub Actions runner does not need a cache or queue database.
+This deliberately contains no forecasting or research fallback. A question is
+eligible only after ``cp_reveal_time`` and before ``spot_scoring_time``. Every
+daily run resubmits the then-current Community Prediction so the standing
+forecast follows later community movement. No local queue database is needed.
 
 The official API exposes Community Predictions on only a limited set of
 questions for ordinary/restricted tokens.  If an eligible question has no
@@ -164,45 +164,12 @@ def build_community_payload(question: dict) -> dict[str, Any] | None:
     return None
 
 
-def _has_forecast_values(entry: object) -> bool:
-    return isinstance(entry, dict) and any(
-        entry.get(key) is not None
-        for key in ("forecast_values", "probability_yes", "continuous_cdf")
-    )
-
-
-def already_followed_after_reveal(question: dict, reveal_time: datetime) -> bool:
-    mine = question.get("my_forecasts")
-    if not isinstance(mine, dict):
-        return False
-
-    entries = list(mine.get("history") or [])
-    latest = mine.get("latest")
-    if isinstance(latest, dict):
-        entries.append(latest)
-
-    saw_undated_forecast = False
-    for entry in entries:
-        if not _has_forecast_values(entry):
-            continue
-        start = parse_datetime(entry.get("start_time"))
-        if start is None:
-            saw_undated_forecast = True
-        elif start >= reveal_time:
-            return True
-    # An undated current forecast cannot safely be distinguished from a prior
-    # run.  Prefer missing an update over repeatedly changing a live forecast.
-    return saw_undated_forecast
-
-
 def candidate_for_question(
     question: dict,
     *,
     post_id: int,
     now: datetime,
     grace_after_reveal: timedelta,
-    safety_before_score: timedelta,
-    copy_lead: timedelta,
 ) -> tuple[Candidate | None, str]:
     if question.get("status") != "open":
         return None, "not_open"
@@ -217,16 +184,12 @@ def candidate_for_question(
     )
     if reveal is None or score is None:
         return None, "missing_timing"
-    if score <= reveal + grace_after_reveal + safety_before_score:
+    if score <= reveal + grace_after_reveal:
         return None, "no_copy_window"
     if now < reveal + grace_after_reveal:
         return None, "waiting_for_reveal"
-    if now >= score - safety_before_score:
+    if now >= score:
         return None, "score_window_passed"
-    if now < score - copy_lead:
-        return None, "waiting_for_copy_window"
-    if already_followed_after_reveal(question, reveal):
-        return None, "already_followed"
 
     payload = build_community_payload(question)
     if payload is None:
@@ -368,8 +331,6 @@ def run(
     submit: bool,
     now: datetime,
     grace_minutes: int,
-    safety_minutes: int,
-    lead_hours: float,
 ) -> int:
     tournament = tournament.strip().lower().rstrip("/").split("/")[-1]
     if not MARKET_PULSE_SLUG.fullmatch(tournament):
@@ -406,16 +367,12 @@ def run(
     counts: dict[str, int] = {"questions_seen": len(questions)}
     candidates: list[Candidate] = []
     grace = timedelta(minutes=grace_minutes)
-    safety = timedelta(minutes=safety_minutes)
-    copy_lead = timedelta(hours=lead_hours)
     for post_id, question in questions:
         candidate, reason = candidate_for_question(
             question,
             post_id=post_id,
             now=now,
             grace_after_reveal=grace,
-            safety_before_score=safety,
-            copy_lead=copy_lead,
         )
         counts[reason] = counts.get(reason, 0) + 1
         if candidate is not None:
@@ -482,20 +439,9 @@ def main() -> int:
         type=int,
         default=int(os.getenv("MARKET_PULSE_CP_GRACE_MINUTES", "5")),
     )
-    parser.add_argument(
-        "--safety-minutes",
-        type=int,
-        default=int(os.getenv("MARKET_PULSE_CP_SAFETY_MINUTES", "15")),
-    )
-    parser.add_argument(
-        "--lead-hours",
-        type=float,
-        default=float(os.getenv("MARKET_PULSE_CP_LEAD_HOURS", "30")),
-        help="Submit only when spot scoring is this near or nearer.",
-    )
     args = parser.parse_args()
-    if args.grace_minutes < 0 or args.safety_minutes < 0 or args.lead_hours <= 0:
-        parser.error("grace/safety must be non-negative and lead-hours must be positive")
+    if args.grace_minutes < 0:
+        parser.error("grace-minutes must be non-negative")
 
     token = os.getenv("METACULUS_TOKEN", "").strip()
     try:
@@ -506,8 +452,6 @@ def main() -> int:
             submit=args.submit,
             now=utcnow(),
             grace_minutes=args.grace_minutes,
-            safety_minutes=args.safety_minutes,
-            lead_hours=args.lead_hours,
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         print(f"::error::{exc}", file=sys.stderr)

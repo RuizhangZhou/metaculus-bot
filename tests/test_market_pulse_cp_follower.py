@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 
 from market_pulse_cp_follower import (
     Candidate,
-    already_followed_after_reveal,
     build_community_payload,
     candidate_for_question,
     run,
@@ -99,14 +98,12 @@ class TestEligibility(unittest.TestCase):
             post_id=201,
             now=NOW,
             grace_after_reveal=timedelta(minutes=5),
-            safety_before_score=timedelta(minutes=15),
-            copy_lead=timedelta(hours=30),
         )
 
         self.assertEqual(reason, "ready")
         self.assertIsInstance(candidate, Candidate)
 
-    def test_forecast_after_reveal_makes_the_run_idempotent(self) -> None:
+    def test_existing_forecast_does_not_block_daily_cp_refresh(self) -> None:
         question = numeric_question(
             my_forecasts={
                 "history": [],
@@ -117,30 +114,14 @@ class TestEligibility(unittest.TestCase):
             }
         )
 
-        self.assertTrue(already_followed_after_reveal(question, REVEAL))
         candidate, reason = candidate_for_question(
             question,
             post_id=201,
             now=NOW,
             grace_after_reveal=timedelta(minutes=5),
-            safety_before_score=timedelta(minutes=15),
-            copy_lead=timedelta(hours=30),
         )
-        self.assertIsNone(candidate)
-        self.assertEqual(reason, "already_followed")
-
-    def test_forecast_before_reveal_does_not_block_one_cp_copy(self) -> None:
-        question = numeric_question(
-            my_forecasts={
-                "history": [],
-                "latest": {
-                    "start_time": "2026-09-17T17:00:00Z",
-                    "forecast_values": [index / 200 for index in range(201)],
-                },
-            }
-        )
-
-        self.assertFalse(already_followed_after_reveal(question, REVEAL))
+        self.assertIsInstance(candidate, Candidate)
+        self.assertEqual(reason, "ready")
 
     def test_zero_length_copy_window_is_explicitly_rejected(self) -> None:
         same_time = "2026-09-18T16:00:00Z"
@@ -153,8 +134,6 @@ class TestEligibility(unittest.TestCase):
             post_id=201,
             now=NOW,
             grace_after_reveal=timedelta(minutes=5),
-            safety_before_score=timedelta(minutes=15),
-            copy_lead=timedelta(hours=30),
         )
 
         self.assertIsNone(candidate)
@@ -196,29 +175,28 @@ class TestRun(unittest.TestCase):
             submit=True,
             now=NOW,
             grace_minutes=5,
-            safety_minutes=15,
-            lead_hours=30,
         )
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(api.submitted, [])
 
-    def test_submit_posts_each_ready_question_once(self) -> None:
+    def test_submit_posts_each_ready_question_on_each_run(self) -> None:
         api = FakeAPI(questions=[(201, numeric_question())])
 
-        exit_code = run(
-            api=api,
-            tournament="market-pulse-26q4",
-            expected_username="human-user",
-            submit=True,
-            now=NOW,
-            grace_minutes=5,
-            safety_minutes=15,
-            lead_hours=30,
-        )
+        exit_codes = [
+            run(
+                api=api,
+                tournament="market-pulse-26q4",
+                expected_username="human-user",
+                submit=True,
+                now=NOW,
+                grace_minutes=5,
+            )
+            for _ in range(2)
+        ]
 
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(api.submitted, [101])
+        self.assertEqual(exit_codes, [0, 0])
+        self.assertEqual(api.submitted, [101, 101])
 
     def test_missing_cp_fails_without_forecasting(self) -> None:
         question = numeric_question(aggregations={})
@@ -231,8 +209,6 @@ class TestRun(unittest.TestCase):
             submit=True,
             now=NOW,
             grace_minutes=5,
-            safety_minutes=15,
-            lead_hours=30,
         )
 
         self.assertEqual(exit_code, 2)
@@ -249,8 +225,6 @@ class TestRun(unittest.TestCase):
                 submit=True,
                 now=NOW,
                 grace_minutes=5,
-                safety_minutes=15,
-                lead_hours=30,
             )
 
 
