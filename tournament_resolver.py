@@ -20,6 +20,9 @@ Consecutive quarters overlap by about three weeks, and a quarter does not start
 on the first day of the calendar quarter. So this matches on the API's own
 start/close dates, and returns every tournament in the family that is currently
 inside its window -- during an overlap that is legitimately two of them.
+FutureEval is the exception: it can publish a practice question before its
+advertised start, so an API ``is_ongoing`` flag may open that family early, and
+``forecasting_end_date`` closes it before the later resolution-only period.
 """
 
 from __future__ import annotations
@@ -47,6 +50,13 @@ class Family:
     matches: Callable[[dict], bool]
     # Slugs that are stable by design and may not appear in the public listing.
     constant: tuple[str, ...] = ()
+    # FutureEval sometimes opens a practice question before the tournament's
+    # advertised start_date.  In that case the API already marks the project as
+    # ongoing, and waiting for start_date means missing a real open question.
+    allow_prestart_when_ongoing: bool = False
+    # FutureEval's close_date includes its resolution period.  Its
+    # forecasting_end_date is the useful cutoff for a forecasting bot.
+    end_date_fields: tuple[str, ...] = ("close_date",)
 
 
 def _is_market_pulse(item: dict) -> bool:
@@ -72,7 +82,12 @@ FAMILIES: dict[str, Family] = {
     # documents the slug as permanently "minibench": the currently active round
     # always answers to it, so there is nothing to resolve.
     "minibench": Family(name="minibench", matches=lambda _: False, constant=("minibench",)),
-    "futureeval": Family(name="futureeval", matches=_is_seasonal_bot_tournament),
+    "futureeval": Family(
+        name="futureeval",
+        matches=_is_seasonal_bot_tournament,
+        allow_prestart_when_ongoing=True,
+        end_date_fields=("forecasting_end_date", "close_date"),
+    ),
 }
 
 
@@ -89,12 +104,27 @@ def _parse_dt(value: object) -> datetime | None:
         return None
 
 
-def _is_running(item: dict, now: datetime) -> bool:
+def _first_date(item: dict, fields: tuple[str, ...]) -> datetime | None:
+    for field in fields:
+        value = _parse_dt(item.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _is_running(item: dict, now: datetime, *, family: Family) -> bool:
     start = _parse_dt(item.get("start_date"))
-    close = _parse_dt(item.get("close_date"))
-    if start and start > now:
+    end = _first_date(item, family.end_date_fields)
+    if end and end <= now:
         return False
-    if close and close <= now:
+    if (
+        start
+        and start > now
+        and not (
+            family.allow_prestart_when_ongoing
+            and item.get("is_ongoing") is True
+        )
+    ):
         return False
     return True
 
@@ -119,7 +149,7 @@ def resolve_family(
     now: datetime | None = None,
     listing: Sequence[dict] | None = None,
 ) -> list[str]:
-    """Slugs in ``family_name`` that are inside their own start/close window."""
+    """Slugs in ``family_name`` whose forecasting window is active."""
     family = FAMILIES.get(family_name)
     if family is None:
         raise ValueError(
@@ -136,7 +166,7 @@ def resolve_family(
         slug = item.get("slug")
         if not isinstance(slug, str) or not slug:
             continue
-        if family.matches(item) and _is_running(item, now):
+        if family.matches(item) and _is_running(item, now, family=family):
             hits.append((_parse_dt(item.get("start_date")) or now, slug))
     return [slug for _, slug in sorted(hits)]
 

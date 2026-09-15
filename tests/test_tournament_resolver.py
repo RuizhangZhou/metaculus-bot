@@ -27,7 +27,9 @@ LISTING = [
         "type": "tournament",
         "bot_leaderboard_status": "bots_only",
         "start_date": "2026-05-18T00:00:00Z",
+        "forecasting_end_date": "2026-09-06T00:00:00Z",
         "close_date": "2026-11-05T00:00:00Z",
+        "is_ongoing": True,
     },
     {
         "slug": "metaculus-cup-summer-2026",
@@ -65,15 +67,36 @@ class TestResolveFamily(unittest.TestCase):
                 "slug": "fall-futureeval-2026",
                 "type": "tournament",
                 "bot_leaderboard_status": "bots_only",
-                "start_date": "2026-09-07T00:00:00Z",
-                "close_date": "2027-01-20T00:00:00Z",
+                "start_date": "2026-09-28T00:00:00Z",
+                "forecasting_end_date": "2027-01-06T00:00:00Z",
+                "close_date": "2027-03-05T00:00:00Z",
+                "is_ongoing": True,
             }
         ]
-        later = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
-        # Summer closes 2026-11-05, so both are live: forecast on both.
+        # This is before Fall's advertised start, but its practice question is
+        # already open and the API marks the tournament ongoing.  Summer's
+        # resolution period continues, but its forecasting window is over.
+        prestart = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
         self.assertEqual(
-            tr.resolve_family("futureeval", now=later, listing=listing),
-            ["summer-futureeval-2026", "fall-futureeval-2026"],
+            tr.resolve_family("futureeval", now=prestart, listing=listing),
+            ["fall-futureeval-2026"],
+        )
+
+    def test_future_prestart_tournament_is_not_selected_until_ongoing(self) -> None:
+        listing = LISTING + [
+            {
+                "slug": "winter-futureeval-2027",
+                "type": "tournament",
+                "bot_leaderboard_status": "bots_only",
+                "start_date": "2027-01-20T00:00:00Z",
+                "forecasting_end_date": "2027-04-20T00:00:00Z",
+                "close_date": "2027-06-01T00:00:00Z",
+                "is_ongoing": False,
+            }
+        ]
+        self.assertEqual(
+            tr.resolve_family("futureeval", now=NOW, listing=listing),
+            ["summer-futureeval-2026"],
         )
 
     def test_overlapping_quarters_both_returned_oldest_first(self) -> None:
