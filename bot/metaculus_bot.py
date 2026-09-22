@@ -395,6 +395,20 @@ class MetaculusBot(
         return safe
 
     @staticmethod
+    def _is_model_unavailable_error(error: BaseException) -> bool:
+        # A model can be listed by the provider yet missing for these
+        # credentials (KIconnect: 404 model_not_found); the next model may work.
+        error_name = error.__class__.__name__.lower()
+        error_text = str(error).lower()
+        if "model_not_found" in error_text:
+            return True
+        return "notfound" in error_name and "model" in error_text and "does not exist" in error_text
+
+    @classmethod
+    def _should_try_fallback_model(cls, error: BaseException) -> bool:
+        return cls._is_transient_provider_error(error) or cls._is_model_unavailable_error(error)
+
+    @staticmethod
     def _is_transient_provider_error(error: BaseException) -> bool:
         error_name = error.__class__.__name__.lower()
         error_text = str(error).lower()
@@ -1172,7 +1186,7 @@ class MetaculusBot(
         try:
             return await base_llm.invoke(prompt)
         except BaseException as e:
-            if not self._is_transient_provider_error(e):
+            if not self._should_try_fallback_model(e):
                 raise
             fallback_llms: list[GeneralLlm | AzureResponsesLlm] = []
             fallback_llms.extend(self._make_kiconnect_fallback_llms(base_purpose))
@@ -1200,7 +1214,7 @@ class MetaculusBot(
                     return await llm.invoke(prompt)
                 except BaseException as fallback_error:
                     last_error = fallback_error
-                    if not self._is_transient_provider_error(fallback_error):
+                    if not self._should_try_fallback_model(fallback_error):
                         raise
             raise last_error
 
@@ -1222,7 +1236,7 @@ class MetaculusBot(
                 additional_instructions=additional_instructions,
             )
         except BaseException as e:
-            if not self._is_transient_provider_error(e):
+            if not self._should_try_fallback_model(e):
                 raise
 
             fallback_parsers: list[GeneralLlm] = []
@@ -1248,7 +1262,7 @@ class MetaculusBot(
                     )
                 except BaseException as fallback_error:
                     last_error = fallback_error
-                    if not self._is_transient_provider_error(fallback_error):
+                    if not self._should_try_fallback_model(fallback_error):
                         raise
             raise last_error
 
@@ -3613,7 +3627,7 @@ class MetaculusBot(
                             if self._is_probably_tavily_error(e):
                                 provider_error = e
                                 break
-                            if not self._is_transient_provider_error(e):
+                            if not self._should_try_fallback_model(e):
                                 raise
                             if idx >= len(deduped_models):
                                 raise
@@ -3974,7 +3988,7 @@ class MetaculusBot(
                             if self._is_probably_exa_error(e):
                                 exa_error = e
                                 break
-                            if not self._is_transient_provider_error(e):
+                            if not self._should_try_fallback_model(e):
                                 raise
                             if idx >= len(deduped_models):
                                 raise
