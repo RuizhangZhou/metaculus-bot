@@ -606,7 +606,7 @@ if __name__ == "__main__":
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=(run_mode == "tournament"),
-        extra_metadata_in_explanation=True,
+        extra_metadata_in_explanation=False,
         enable_summarize_research=enable_summarize_research,
     )
 

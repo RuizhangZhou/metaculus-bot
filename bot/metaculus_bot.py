@@ -5308,7 +5308,7 @@ if __name__ == "__main__":
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=(run_mode == "tournament"),
-        extra_metadata_in_explanation=True,
+        extra_metadata_in_explanation=False,
         # llms={  # choose your model names or GeneralLlm llms here, otherwise defaults will be chosen for you
         #     "default": GeneralLlm(
         #         model="openrouter/openai/gpt-4o-mini", # "anthropic/claude-sonnet-4-20250514", etc (see docs for litellm)

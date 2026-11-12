@@ -16,7 +16,7 @@ numpy = "^2.3.0"
 openai = "^2.0.0"
 python-dotenv = "^1.0.1"
 pydantic = ">=2.0.0,<3.0.0"
-forecasting-tools = "^0.2.80"
+forecasting-tools = "^0.3.6"
 
 [tool.poetry.group.web.dependencies]
 playwright = ">=1.40.0,<2.0.0"
